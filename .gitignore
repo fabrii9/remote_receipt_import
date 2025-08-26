@@ -1,0 +1,26 @@
+# Python / Odoo
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+.env
+.venv/
+venv/
+ENV/
+build/
+dist/
+.coverage
+.pytest_cache/
+
+# IDE / OS
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
+
+# Otros
+*.log
+*.orig
+*.bak

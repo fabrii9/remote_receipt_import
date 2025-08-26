@@ -1,0 +1,7 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_remote_payment_import_log,access_remote_payment_import_log,model_remote_payment_import_log,,1,0,0,0
+access_remote_payment_import_log_line,access_remote_payment_import_log_line,model_remote_payment_import_log_line,,1,0,0,0
+access_remote_payment_import_wizard,access_remote_payment_import_wizard,model_remote_payment_import_wizard,,1,1,1,0
+access_remote_receipt_settings_wizard,access_remote_receipt_settings_wizard,model_remote_receipt_settings_wizard,,1,1,1,0
+access_remote_payment_import_log_user,remote.payment.import.log,model_remote_payment_import_log,base.group_user,1,1,1,0
+

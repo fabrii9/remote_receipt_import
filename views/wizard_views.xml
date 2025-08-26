@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <!-- Vista del wizard de importación -->
+  <record id="view_remote_payment_import_wizard" model="ir.ui.view">
+    <field name="name">remote.payment.import.wizard.form</field>
+    <field name="model">remote.payment.import.wizard</field>
+    <field name="arch" type="xml">
+      <form string="Importar pagos (Odoo 18)">
+        <group>
+          <field name="upload" filename="filename"/>
+          <field name="filename"/>
+          <div class="o_form_label">Formato: XLSX (openpyxl) o CSV con encabezados.</div>
+          <div class="o_form_label">
+            Columnas esperadas: 'de Pago' (fecha), 
+            '<b>Tipo de Operación</b>' = <i>CUIT/DNI</i>, 
+            '<b>Operación Relacionada</b>' = <i>Memo</i>,
+            'Importe'.
+          </div>
+        </group>
+        <footer>
+          <button string="Procesar" type="object" name="action_process" class="btn-primary"/>
+          <button string="Cancelar" special="cancel" class="btn-secondary"/>
+        </footer>
+      </form>
+    </field>
+  </record>
+
+  <!-- Acción del wizard -->
+  <record id="action_remote_payment_import_wizard" model="ir.actions.act_window">
+    <field name="name">Importar pagos</field>
+    <field name="res_model">remote.payment.import.wizard</field>
+    <field name="view_mode">form</field>
+    <field name="target">new</field>
+  </record>
+
+  <!-- Menú del wizard -->
+  <menuitem id="menu_remote_import_wizard"
+            name="Importar pagos"
+            parent="menu_remote_import_main"
+            action="action_remote_payment_import_wizard"
+            sequence="10"
+            groups="base.group_user"/>
+</odoo>

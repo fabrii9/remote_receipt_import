@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 import base64
-import csv
 import io
 
-from odoo import api, fields, models, _
-from odoo.exceptions import UserError
+from odoo import api, fields, models
+
+try:
+    import openpyxl
+    from openpyxl.styles import Font, Alignment
+except Exception:
+    openpyxl = None
 
 
 class RemotePaymentImportLog(models.Model):
@@ -14,19 +18,15 @@ class RemotePaymentImportLog(models.Model):
 
     name = fields.Char(string="Nombre", default=lambda self: self._default_name())
     file_name = fields.Char(string="Archivo origen")
-
-    # OJO: conservamos tu nombre de campo existente
-    lines_ids = fields.One2many(
-        "remote.payment.import.log.line", "log_id", string="Líneas"
-    )
+    lines_ids = fields.One2many("remote.payment.import.log.line", "log_id", string="Líneas")
 
     total_rows = fields.Integer(string="Filas procesadas", compute="_compute_counts", store=False)
     approved_count = fields.Integer(string="Aprobados", compute="_compute_counts", store=False)
     skipped_count = fields.Integer(string="No aprobados", compute="_compute_counts", store=False)
 
-    # Campos para exportación/descarga
-    export_file = fields.Binary(string="Archivo exportado", readonly=True)
-    export_filename = fields.Char(string="Nombre archivo")
+    # Binario para descarga
+    export_file = fields.Binary(string="Archivo exportado")
+    export_filename = fields.Char(string="Nombre de exportación")
 
     def _default_name(self):
         return fields.Datetime.now().strftime("Import %Y-%m-%d %H:%M:%S")
@@ -37,73 +37,103 @@ class RemotePaymentImportLog(models.Model):
             rec.approved_count = sum(1 for l in rec.lines_ids if l.status == 'approved')
             rec.skipped_count = rec.total_rows - rec.approved_count
 
-    def action_download_csv(self):
-        """Genera un CSV con las líneas del log y lo sirve por /web/content."""
+    # -----------------------------
+    # Exportar a Excel (.xlsx)
+    # -----------------------------
+    def action_download_xlsx(self):
         self.ensure_one()
+        if not openpyxl:
+            # Si faltara la dependencia (muy raro porque ya usás openpyxl en el módulo)
+            raise ValueError("Falta la dependencia 'openpyxl' para exportar a Excel.")
 
-        header = [
-            "Log", "Archivo Origen", "Fecha de Registro",
-            "Fecha Pago", "Tipo Operación", "ID (CUIT/DNI)", "Importe",
-            "Estado", "Partner (ID remoto)", "Partner (nombre)",
-            "Deuda detectada", "Payment (ID remoto)", "Mensaje"
+        # Mapeo legible del estado
+        status_map = dict(
+            self.env['remote.payment.import.log.line']._fields['status']._description_selection(self.env)
+        )
+
+        # Crear workbook
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Líneas"
+
+        # Encabezados
+        headers = [
+            "Fecha de Pago",
+            "CUIT/DNI (Tipo de Operación)",
+            "Memo (Operación Relacionada)",
+            "Importe",
+            "Estado",
+            "Partner ID (Odoo 18)",
+            "Partner Nombre",
+            "Deuda detectada",
+            "ID Payment (Odoo 18)",
+            "Mensaje",
         ]
+        ws.append(headers)
 
-        # Labels del selection 'status' (desde el modelo de LÍNEAS)
-        status_field_info = self.env['remote.payment.import.log.line'].fields_get(['status'])
-        status_selection = dict(status_field_info['status']['selection'])
+        # Estilo encabezados
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center")
 
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(header)
-
+        # Filas
         for l in self.lines_ids:
-            fecha_log = fields.Datetime.to_string(self.create_date) if self.create_date else ""
-            fecha_pago = l.fecha_pago.strftime("%Y-%m-%d") if getattr(l.fecha_pago, "strftime", None) else (l.fecha_pago or "")
-            status_label = status_selection.get(l.status, l.status or "")
-
-            writer.writerow([
-                self.name or "",
-                self.file_name or "",
-                fecha_log,
-                fecha_pago,
+            ws.append([
+                l.fecha_pago and l.fecha_pago.strftime("%Y-%m-%d") or "",
                 l.tipo_operacion or "",
                 l.operacion_relacionada or "",
-                ("%.2f" % (l.importe or 0.0)),
-                status_label,
-                l.partner_id or "",
+                l.importe or 0.0,
+                status_map.get(l.status, l.status or ""),
+                l.partner_id or 0,
                 l.partner_name or "",
-                ("%.2f" % (l.deuda_detectada or 0.0)),
-                l.payment_id or "",
-                (l.message or "").replace("\n", " | ").replace("\r", " "),
+                l.deuda_detectada or 0.0,
+                l.payment_id or 0,
+                l.message or "",
             ])
 
-        # BOM para que Excel abra bien en UTF-8
-        csv_bytes = ("\ufeff" + buf.getvalue()).encode("utf-8")
-        buf.close()
-        b64 = base64.b64encode(csv_bytes)
-        filename = (self.file_name or self.name or "log") + ".csv"
+        # Auto ancho de columnas
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                try:
+                    val = str(cell.value) if cell.value is not None else ""
+                except Exception:
+                    val = ""
+                max_len = max(max_len, len(val))
+            ws.column_dimensions[col_letter].width = min(max(10, max_len + 2), 60)
 
-        # Guardamos con sudo() para evitar restricciones de escritura del usuario
+        # Guardar en binario
+        bio = io.BytesIO()
+        wb.save(bio)
+        data = bio.getvalue()
+
+        fname = (self.name or "log") + ".xlsx"
+        # Usamos sudo para evitar errores de permisos de escritura sobre el registro
         self.sudo().write({
-            "export_file": b64,
-            "export_filename": filename,
+            "export_file": base64.b64encode(data),
+            "export_filename": fname,
         })
 
+        # Devolver acción de descarga
         return {
             "type": "ir.actions.act_url",
-            "url": "/web/content?model=remote.payment.import.log&id=%d&field=export_file&download=1&filename=%s"
-                % (self.id, filename),
+            "url": "/web/content?model=remote.payment.import.log"
+                   "&id=%d&field=export_file&filename_field=export_filename&download=true" % self.id,
             "target": "self",
         }
+
 
 class RemotePaymentImportLogLine(models.Model):
     _name = "remote.payment.import.log.line"
     _description = "Línea de Log de Importación"
 
     log_id = fields.Many2one("remote.payment.import.log", required=True, ondelete="cascade")
+
     fecha_pago = fields.Date(string="Fecha de Pago")
-    tipo_operacion = fields.Char(string="Tipo de Operación")
-    operacion_relacionada = fields.Char(string="Operación Relacionada (CUIT/DNI)")
+    # OJO: estos labels en la vista se renombran, acá quedan como campos "técnicos"
+    tipo_operacion = fields.Char(string="Tipo de Operación")  # aquí guardamos CUIT/DNI (archivo)
+    operacion_relacionada = fields.Char(string="Operación Relacionada (CUIT/DNI)")  # aquí guardamos MEMO (archivo)
     importe = fields.Float(string="Importe")
 
     partner_id = fields.Integer(string="Partner ID (Odoo 18)")
@@ -113,12 +143,9 @@ class RemotePaymentImportLogLine(models.Model):
 
     status = fields.Selection([
         ('approved', 'Aprobado'),
-        ('in_process', 'En proceso'),
-        ('created', 'Creado (borrador)'),
         ('partner_not_found', 'Partner no encontrado'),
         ('mismatch', 'Importe != Deuda'),
         ('error', 'Error'),
     ], string="Estado", default='error')
-
 
     message = fields.Text(string="Mensaje")

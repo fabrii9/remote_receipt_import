@@ -3,6 +3,9 @@ import base64
 import io
 import re
 import xmlrpc.client
+import time
+import random
+import logging
 from datetime import datetime
 
 from odoo import api, fields, models, _
@@ -46,6 +49,45 @@ class RemotePaymentImportWizard(models.TransientModel):
             raise UserError(_("No se pudo autenticar en Odoo 18 con las credenciales provistas."))
         objects = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
         return uid, objects
+
+
+    # -------------------------
+    # XML-RPC con retry (anti 429 / rate limit)
+    # -------------------------
+    def _execute_kw_with_retry(
+        self,
+        objects,
+        db,
+        uid,
+        pwd,
+        model,
+        method,
+        args,
+        kwargs=None,
+        max_retries=6,
+        base_backoff=1.5,
+        max_sleep=20.0,
+    ):
+        """Wrapper centralizado para execute_kw con reintentos ante HTTP 429."""
+        kwargs = kwargs or {}
+        attempt = 0
+        while True:
+            try:
+                return objects.execute_kw(db, uid, pwd, model, method, args, kwargs)
+            except xmlrpc.client.ProtocolError as e:
+                # 429 Too Many Requests
+                if getattr(e, "errcode", None) == 429 and attempt < max_retries:
+                    attempt += 1
+                    delay = min(max_sleep, base_backoff * attempt) + random.uniform(0, 0.4)
+                    _logger = logging.getLogger(__name__)
+                    _logger.warning(
+                        "XML-RPC 429 en %s.%s intento=%s/%s; durmiendo %.2fs",
+                        model, method, attempt, max_retries, delay
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
+
 
     # -------------------------
     # Normalizadores / parsing
@@ -209,7 +251,7 @@ class RemotePaymentImportWizard(models.TransientModel):
         uid, objects = self._xmlrpc_env(url, db, user, pwd)
 
         # Determinar compañía del diario y contextos
-        j_read = objects.execute_kw(db, uid, pwd, "account.journal", "read", [[journal_id], ["company_id"]])
+        j_read = self._execute_kw_with_retry(objects, db, uid, pwd, "account.journal", "read", [[journal_id], ["company_id"]])
         if not j_read:
             raise UserError(_("No se pudo leer el diario ID %s en Odoo 18.") % journal_id)
         company_field = j_read[0].get("company_id")
@@ -218,7 +260,7 @@ class RemotePaymentImportWizard(models.TransientModel):
             raise UserError(_("El diario configurado no tiene compañía asignada."))
 
         try:
-            all_company_ids = objects.execute_kw(db, uid, pwd, "res.company", "search", [[]])
+            all_company_ids = self._execute_kw_with_retry(objects, db, uid, pwd, "res.company", "search", [[]])
         except Exception:
             all_company_ids = [journal_company_id]
 
@@ -271,8 +313,8 @@ class RemotePaymentImportWizard(models.TransientModel):
                 domain = ["|"] * (len(clauses) - 1) + clauses if clauses else [("id", "=", 0)]
 
                 # Buscar en todas las compañías (incluye archivados)
-                partner_ids_all = objects.execute_kw(
-                    db, uid, pwd, "res.partner", "search",
+                partner_ids_all = self._execute_kw_with_retry(
+                    objects, db, uid, pwd, "res.partner", "search",
                     [domain],
                     {"limit": 10, "context": ctx_any_company}
                 )
@@ -287,8 +329,8 @@ class RemotePaymentImportWizard(models.TransientModel):
                             ("commercial_partner_id.vat", "ilike", v),
                         ])
                     domain_ilike = ["|"] * (len(clauses_ilike) - 1) + clauses_ilike if clauses_ilike else [("id", "=", 0)]
-                    partner_ids_all = objects.execute_kw(
-                        db, uid, pwd, "res.partner", "search",
+                    partner_ids_all = self._execute_kw_with_retry(
+                        objects, db, uid, pwd, "res.partner", "search",
                         [domain_ilike],
                         {"limit": 10, "context": ctx_any_company}
                     )
@@ -302,8 +344,8 @@ class RemotePaymentImportWizard(models.TransientModel):
                     continue
 
                 # Leer candidatos
-                partners_data = objects.execute_kw(
-                    db, uid, pwd, "res.partner", "read",
+                partners_data = self._execute_kw_with_retry(
+                    objects, db, uid, pwd, "res.partner", "read",
                     [partner_ids_all, ["name", "company_id"]],
                     {"context": ctx_any_company}
                 )
@@ -348,15 +390,15 @@ class RemotePaymentImportWizard(models.TransientModel):
                     ("parent_state", "=", "posted"),
                     ("company_id", "=", journal_company_id),
                 ]
-                aml_ids = objects.execute_kw(
-                    db, uid, pwd, "account.move.line", "search",
+                aml_ids = self._execute_kw_with_retry(
+                    objects, db, uid, pwd, "account.move.line", "search",
                     [aml_domain],
                     {"limit": 0, "context": ctx_journal_company}
                 )
                 deuda = 0.0
                 if aml_ids:
-                    aml_read = objects.execute_kw(
-                        db, uid, pwd, "account.move.line", "read",
+                    aml_read = self._execute_kw_with_retry(
+                        objects, db, uid, pwd, "account.move.line", "read",
                         [aml_ids, ["amount_residual"]],
                         {"context": ctx_journal_company}
                     )
@@ -380,8 +422,8 @@ class RemotePaymentImportWizard(models.TransientModel):
                     if pm_line_id:
                         payment_vals["payment_method_line_id"] = pm_line_id
 
-                    payment_id = objects.execute_kw(
-                        db, uid, pwd, "account.payment", "create",
+                    payment_id = self._execute_kw_with_retry(
+                        objects, db, uid, pwd, "account.payment", "create",
                         [payment_vals],
                         {"context": ctx_journal_company}
                     )
@@ -390,8 +432,8 @@ class RemotePaymentImportWizard(models.TransientModel):
                     post_error = None
                     state = "draft"
                     try:
-                        objects.execute_kw(
-                            db, uid, pwd, "account.payment", "action_post",
+                        self._execute_kw_with_retry(
+                            objects, db, uid, pwd, "account.payment", "action_post",
                             [[payment_id]],
                             {"context": ctx_journal_company}
                         )
@@ -399,8 +441,8 @@ class RemotePaymentImportWizard(models.TransientModel):
                         post_error = e_post
                     finally:
                         try:
-                            pdata = objects.execute_kw(
-                                db, uid, pwd, "account.payment", "read",
+                            pdata = self._execute_kw_with_retry(
+                                objects, db, uid, pwd, "account.payment", "read",
                                 [[payment_id], ["state"]],
                                 {"context": ctx_journal_company}
                             )

@@ -7,6 +7,7 @@ import time
 import random
 import logging
 from datetime import datetime
+from collections import defaultdict
 
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
@@ -87,6 +88,110 @@ class RemotePaymentImportWizard(models.TransientModel):
                     time.sleep(delay)
                     continue
                 raise
+
+
+    # -------------------------
+    # Idempotencia (evitar duplicados)
+    # -------------------------
+    def _make_idempotency_key(
+        self,
+        journal_id: int,
+        company_id: int,
+        partner_id: int,
+        amount: float,
+        date_str: str,
+        memo_raw: str,
+    ) -> str:
+        """Genera una clave estable para identificar un recibo.
+
+        Motivo: con rate-limit (HTTP 429) y/o ejecuciones concurrentes, el wizard puede
+        intentar crear el mismo pago más de una vez. Esta clave se graba en `ref` y se
+        usa para buscar pagos ya creados.
+        """
+        memo = (memo_raw or "").strip()
+        memo_norm = re.sub(r"\s+", " ", memo)[:120]
+        return f"RRI|j{int(journal_id)}|c{int(company_id)}|p{int(partner_id)}|a{amount:.2f}|d{date_str}|m{memo_norm}"[:250]
+
+
+    def _find_existing_payment(self, objects, db, uid, pwd, ctx, idem_key: str):
+        """Busca un payment existente por ref=idempotency_key."""
+        recs = self._execute_kw_with_retry(
+            objects,
+            db,
+            uid,
+            pwd,
+            "account.payment",
+            "search_read",
+            [[("ref", "=", idem_key)]],
+            {"fields": ["id", "state"], "limit": 1, "context": ctx},
+        )
+        return recs[0] if recs else None
+
+    def _batch_search_partners(self, objects, db, uid, pwd, ctx, cuit_variants_list):
+        """Busca múltiples partners en una sola llamada XML-RPC.
+        
+        Args:
+            cuit_variants_list: lista de tuplas [(cuit_norm, [variants]), ...]
+        
+        Returns:
+            dict: {cuit_normalizado: partner_data o None}
+        """
+        # Aplanar todas las variantes y crear dominio OR masivo
+        all_variants = []
+        variant_to_original = {}  # mapeo de variante a CUIT normalizado original
+        
+        for cuit_norm, variants in cuit_variants_list:
+            for v in variants:
+                all_variants.append(v)
+                variant_to_original[v] = cuit_norm
+        
+        if not all_variants:
+            return {}
+        
+        # Crear dominio OR para todas las variantes
+        clauses = []
+        for v in all_variants:
+            clauses.extend([
+                ("vat", "=", v),
+                ("ref", "=", v),
+                ("commercial_partner_id.vat", "=", v),
+            ])
+        domain = ["|"] * (len(clauses) - 1) + clauses if clauses else [("id", "=", 0)]
+        
+        # Búsqueda batch
+        partner_ids = self._execute_kw_with_retry(
+            objects, db, uid, pwd, "res.partner", "search",
+            [domain],
+            {"limit": 100, "context": ctx}
+        )
+        
+        if not partner_ids:
+            return {cuit: None for cuit, _ in cuit_variants_list}
+        
+        # Leer todos los partners encontrados
+        partners_data = self._execute_kw_with_retry(
+            objects, db, uid, pwd, "res.partner", "read",
+            [partner_ids, ["name", "company_id", "vat", "ref"]],
+            {"context": ctx}
+        )
+        
+        # Mapear partners a CUITs normalizados
+        result = {cuit: None for cuit, _ in cuit_variants_list}
+        
+        for p in partners_data:
+            # Intentar matchear con las variantes
+            pvat = self._normalize_cuit(p.get("vat"))
+            pref = self._normalize_cuit(p.get("ref"))
+            
+            for variant in all_variants:
+                vnorm = self._normalize_cuit(variant)
+                if vnorm and (vnorm == pvat or vnorm == pref):
+                    original_cuit = variant_to_original.get(variant)
+                    if original_cuit and result[original_cuit] is None:
+                        result[original_cuit] = p
+                    break
+        
+        return result
 
 
     # -------------------------
@@ -273,7 +378,37 @@ class RemotePaymentImportWizard(models.TransientModel):
         log = self.env["remote.payment.import.log"].sudo().create({
             "file_name": self.filename or "archivo",
         })
+        # Commit inicial para liberar lock y permitir que otros procesos funcionen
+        self.env.cr.commit()
 
+        # Preparar búsqueda batch de partners
+        _logger = logging.getLogger(__name__)
+        _logger.info(f"Iniciando importación de {len(rows)} filas")
+        
+        # Fase 1: Extraer todos los CUITs y buscarlos en batch
+        cuit_to_variants = {}  # {cuit_normalizado: [variants]}
+        row_to_cuit = {}  # {row_index: cuit_normalizado}
+        
+        for idx, row in enumerate(rows):
+            tipo_raw = row["tipo_operacion"]
+            cuit_digits = self._normalize_cuit(tipo_raw)
+            variants = self._vat_variants(cuit_digits)
+            if variants:
+                cuit_to_variants[cuit_digits] = variants
+                row_to_cuit[idx] = cuit_digits
+        
+        # Búsqueda batch de partners (1 sola llamada XML-RPC en lugar de N)
+        _logger.info(f"Buscando {len(cuit_to_variants)} partners únicos en batch...")
+        cuit_variants_list = [(cuit, vars) for cuit, vars in cuit_to_variants.items()]
+        partners_cache = self._batch_search_partners(
+            objects, db, uid, pwd, ctx_any_company, cuit_variants_list
+        )
+        _logger.info(f"Partners encontrados: {sum(1 for p in partners_cache.values() if p is not None)}")
+        
+        # Fase 2: Procesar filas con cache de partners
+        lines_to_create = []  # Acumular para creación batch
+        batch_size = 50  # Crear logs cada 50 filas para liberar memoria
+        
         for idx, row in enumerate(rows, start=1):
             fecha = row["fecha_pago"]
             tipo_raw = row["tipo_operacion"]            # AHORA es el CUIT/DNI
@@ -292,63 +427,23 @@ class RemotePaymentImportWizard(models.TransientModel):
             }
 
             try:
-                # Variantes del CUIT/DNI
-                variants = self._vat_variants(cuit_digits)
-                if not variants:
+                # Usar cache de partners (ya buscados en batch)
+                if cuit_digits not in partners_cache:
                     line_vals.update({
                         "status": "partner_not_found",
                         "message": "No hay CUIT/DNI válido (tomado de 'Tipo de Operación')."
                     })
-                    self.env["remote.payment.import.log.line"].sudo().create(line_vals)
+                    lines_to_create.append(line_vals)
                     continue
 
-                # Dominio OR para vat/ref/commercial_partner_id.vat
-                clauses = []
-                for v in variants:
-                    clauses.extend([
-                        ("vat", "=", v),
-                        ("ref", "=", v),
-                        ("commercial_partner_id.vat", "=", v),
-                    ])
-                domain = ["|"] * (len(clauses) - 1) + clauses if clauses else [("id", "=", 0)]
-
-                # Buscar en todas las compañías (incluye archivados)
-                partner_ids_all = self._execute_kw_with_retry(
-                    objects, db, uid, pwd, "res.partner", "search",
-                    [domain],
-                    {"limit": 10, "context": ctx_any_company}
-                )
-
-                # Fallback ILIKE si no encontró por igualdad
-                if not partner_ids_all:
-                    clauses_ilike = []
-                    for v in variants:
-                        clauses_ilike.extend([
-                            ("vat", "ilike", v),
-                            ("ref", "ilike", v),
-                            ("commercial_partner_id.vat", "ilike", v),
-                        ])
-                    domain_ilike = ["|"] * (len(clauses_ilike) - 1) + clauses_ilike if clauses_ilike else [("id", "=", 0)]
-                    partner_ids_all = self._execute_kw_with_retry(
-                        objects, db, uid, pwd, "res.partner", "search",
-                        [domain_ilike],
-                        {"limit": 10, "context": ctx_any_company}
-                    )
-
-                if not partner_ids_all:
+                chosen = partners_cache[cuit_digits]
+                if not chosen:
                     line_vals.update({
                         "status": "partner_not_found",
                         "message": f"No se encontró partner (vat/ref) para {cuit_digits}."
                     })
-                    self.env["remote.payment.import.log.line"].sudo().create(line_vals)
+                    lines_to_create.append(line_vals)
                     continue
-
-                # Leer candidatos
-                partners_data = self._execute_kw_with_retry(
-                    objects, db, uid, pwd, "res.partner", "read",
-                    [partner_ids_all, ["name", "company_id"]],
-                    {"context": ctx_any_company}
-                )
 
                 def _m2o_id(val):
                     if isinstance(val, (list, tuple)) and val:
@@ -357,26 +452,13 @@ class RemotePaymentImportWizard(models.TransientModel):
                         return val
                     return False
 
-                # Elegir partner por compañía del diario (o sin compañía)
-                chosen = None
-                fallback_none_company = None
-                for p in partners_data:
-                    cid = _m2o_id(p.get("company_id"))
-                    if cid == journal_company_id:
-                        chosen = p
-                        break
-                    if not cid and not fallback_none_company:
-                        fallback_none_company = p
-                if not chosen:
-                    chosen = fallback_none_company or partners_data[0]
-
                 partner_id = chosen["id"] if isinstance(chosen.get("id"), int) else None
                 if not partner_id:
                     line_vals.update({
                         "status": "partner_not_found",
                         "message": f"No se pudo determinar el ID del partner para {cuit_digits}."
                     })
-                    self.env["remote.payment.import.log.line"].sudo().create(line_vals)
+                    lines_to_create.append(line_vals)
                     continue
 
                 line_vals["partner_id"] = partner_id
@@ -478,7 +560,21 @@ class RemotePaymentImportWizard(models.TransientModel):
                     "message": f"Excepción: {e}"
                 })
 
-            self.env["remote.payment.import.log.line"].sudo().create(line_vals)
+            lines_to_create.append(line_vals)
+            
+            # Crear logs en batch cada 50 filas y hacer commit para liberar worker
+            if len(lines_to_create) >= batch_size:
+                self.env["remote.payment.import.log.line"].sudo().create(lines_to_create)
+                lines_to_create = []
+                self.env.cr.commit()  # Liberar locks de BD para que otros endpoints funcionen
+                _logger.info(f"Procesadas {idx}/{len(rows)} filas, commit realizado")
+        
+        # Crear líneas restantes
+        if lines_to_create:
+            self.env["remote.payment.import.log.line"].sudo().create(lines_to_create)
+            self.env.cr.commit()
+        
+        _logger.info(f"Importación completada: {len(rows)} filas procesadas")
 
         action = self.env.ref("remote_receipt_import.action_remote_payment_import_log").sudo().read()[0]
         action["domain"] = [("id", "=", log.id)]

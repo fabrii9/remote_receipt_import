@@ -276,17 +276,28 @@ class RemotePaymentImportWizard(models.TransientModel):
             pass
         return re.sub(r"\D", "", s)
 
-    def _vat_variants(self, cuit_digits):
+    def _vat_variants(self, cuit_raw, cuit_digits):
         """
         Variantes comunes para buscar el CUIT/DNI:
+        - valor original (tal cual viene del Excel)
         - solo dígitos
         - CUIT con guiones: XX-XXXXXXXX-X
         - DNI con puntos: XX.XXX.XXX (si tiene 8 dígitos)
         """
+        variants = set()
+        
+        # Agregar valor original tal cual está en el Excel
+        if cuit_raw:
+            original = str(cuit_raw).strip()
+            if original:
+                variants.add(original)
+        
+        # Agregar variantes normalizadas
         s = re.sub(r"\D", "", str(cuit_digits or ""))
         if not s:
-            return []
-        variants = {s}
+            return list(variants) if variants else []
+        
+        variants.add(s)
         if len(s) == 11:  # CUIT
             variants.add(f"{s[:2]}-{s[2:10]}-{s[10:]}")
         if len(s) == 8:   # DNI
@@ -471,7 +482,7 @@ class RemotePaymentImportWizard(models.TransientModel):
         for idx, row in enumerate(rows):
             tipo_raw = row["tipo_operacion"]
             cuit_digits = self._normalize_cuit(tipo_raw)
-            variants = self._vat_variants(cuit_digits)
+            variants = self._vat_variants(tipo_raw, cuit_digits)  # Pasar valor original Y normalizado
             if variants:
                 cuit_to_variants[cuit_digits] = variants
                 row_to_cuit[idx] = cuit_digits

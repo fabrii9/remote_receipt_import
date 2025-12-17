@@ -1,6 +1,11 @@
-# Remote Receipt Import (Odoo 16 → Odoo 18) v16.0.1.4
+# Remote Receipt Import (Odoo 16 → Odoo 18) v16.0.1.6
 
-**Nuevas mejoras UX v1.4:**
+**Fix crítico v1.6:**
+- 🔧 **Búsqueda exacta de CUITs**: Ahora busca partners usando el valor EXACTO del Excel (sin normalizar)
+- ✅ **Sin pérdida de datos**: No se pierden partners por normalización excesiva
+- 📋 **Múltiples formatos**: Soporta CUITs con/sin guiones, DNIs con/sin puntos, y valores sin formato
+
+**Mejoras UX v1.4:**
 - 🎯 **Barra de progreso visual**: Muestra el estado del proceso en tiempo real
 - 📊 **Notificaciones**: Alertas sobre inicio y finalización de la importación
 - ✅ **Feedback continuo**: El usuario ve cuántas filas se han procesado

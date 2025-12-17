@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     "name": "Remote Receipt Import (O16 → O18)",
-    "version": "16.0.1.4",
+    "version": "16.0.1.6",
     "summary": "Importa pagos desde Excel/CSV y crea recibos en Odoo 18 con feedback visual en tiempo real. Optimizado para alto rendimiento.",
     "author": "Fabrizio + ChatGPT",
     "license": "AGPL-3",

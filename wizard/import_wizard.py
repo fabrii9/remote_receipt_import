@@ -26,6 +26,16 @@ class RemotePaymentImportWizard(models.TransientModel):
 
     upload = fields.Binary(string="Archivo (XLSX o CSV)", required=True)
     filename = fields.Char(string="Nombre de archivo")
+    
+    # Campos de progreso y estado
+    state = fields.Selection([
+        ('draft', 'Borrador'),
+        ('processing', 'Procesando...'),
+        ('done', 'Completado'),
+    ], string="Estado", default='draft')
+    progress_message = fields.Text(string="Progreso", readonly=True)
+    total_rows = fields.Integer(string="Total filas", readonly=True)
+    processed_rows = fields.Integer(string="Filas procesadas", readonly=True)
 
     # -------------------------
     # Helpers de configuración
@@ -375,6 +385,15 @@ class RemotePaymentImportWizard(models.TransientModel):
         content = base64.b64decode(self.upload)
         rows = self._read_rows(content, self.filename or "")
 
+        # Actualizar estado del wizard
+        self.write({
+            'state': 'processing',
+            'total_rows': len(rows),
+            'processed_rows': 0,
+            'progress_message': f'Iniciando importación de {len(rows)} filas...'
+        })
+        self.env.cr.commit()
+
         log = self.env["remote.payment.import.log"].sudo().create({
             "file_name": self.filename or "archivo",
         })
@@ -384,6 +403,17 @@ class RemotePaymentImportWizard(models.TransientModel):
         # Preparar búsqueda batch de partners
         _logger = logging.getLogger(__name__)
         _logger.info(f"Iniciando importación de {len(rows)} filas")
+        
+        # Notificación al usuario (bus notification)
+        try:
+            self.env['bus.bus']._sendone(self.env.user.partner_id, 'simple_notification', {
+                'type': 'info',
+                'title': 'Importación de Pagos',
+                'message': f'Procesando {len(rows)} filas. El proceso continuará en segundo plano.',
+                'sticky': False,
+            })
+        except Exception:
+            pass  # Si falla la notificación, continuar igual
         
         # Fase 1: Extraer todos los CUITs y buscarlos en batch
         cuit_to_variants = {}  # {cuit_normalizado: [variants]}
@@ -566,6 +596,14 @@ class RemotePaymentImportWizard(models.TransientModel):
             if len(lines_to_create) >= batch_size:
                 self.env["remote.payment.import.log.line"].sudo().create(lines_to_create)
                 lines_to_create = []
+                
+                # Actualizar progreso
+                progress_pct = int((idx / len(rows)) * 100)
+                self.write({
+                    'processed_rows': idx,
+                    'progress_message': f'Procesadas {idx}/{len(rows)} filas ({progress_pct}%)'
+                })
+                
                 self.env.cr.commit()  # Liberar locks de BD para que otros endpoints funcionen
                 _logger.info(f"Procesadas {idx}/{len(rows)} filas, commit realizado")
         
@@ -575,7 +613,57 @@ class RemotePaymentImportWizard(models.TransientModel):
             self.env.cr.commit()
         
         _logger.info(f"Importación completada: {len(rows)} filas procesadas")
+        
+        # Actualizar estado final
+        approved = len([l for l in log.lines_ids if l.status == 'approved'])
+        self.write({
+            'state': 'done',
+            'processed_rows': len(rows),
+            'progress_message': f'✓ Importación completada: {len(rows)} filas procesadas\n✓ Pagos aprobados: {approved}\n✓ Revisa los logs para más detalles'
+        })
+        self.env.cr.commit()
+        
+        # Notificación final
+        try:
+            self.env['bus.bus']._sendone(self.env.user.partner_id, 'simple_notification', {
+                'type': 'success',
+                'title': 'Importación Exitosa',
+                'message': f'✓ Completado: {approved} pagos creados de {len(rows)} filas',
+                'sticky': True,
+            })
+        except Exception:
+            pass
+        
+        # Guardar el log_id para el método action_view_logs
+        self.env.context = dict(self.env.context, active_log_id=log.id)
 
-        action = self.env.ref("remote_receipt_import.action_remote_payment_import_log").sudo().read()[0]
-        action["domain"] = [("id", "=", log.id)]
+        # Retornar acción para recargar el wizard y mostrar estado
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': self._name,
+            'res_id': self.id,
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {'active_log_id': log.id}
+        }
+    
+    def action_view_logs(self):
+        """Abrir los logs de la importación."""
+        self.ensure_one()
+        log_id = self.env.context.get('active_log_id')
+        if not log_id:
+            # Buscar el log más reciente con el mismo nombre de archivo
+            log = self.env['remote.payment.import.log'].sudo().search(
+                [('file_name', '=', self.filename or 'archivo')],
+                order='create_date desc',
+                limit=1
+            )
+            log_id = log.id if log else False
+        
+        if not log_id:
+            raise UserError(_('No se encontró el log de importación.'))
+        
+        action = self.env.ref('remote_receipt_import.action_remote_payment_import_log').sudo().read()[0]
+        action['domain'] = [('id', '=', log_id)]
+        action['target'] = 'current'
         return action

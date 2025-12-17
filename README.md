@@ -1,4 +1,11 @@
-# Remote Receipt Import (Odoo 16 → Odoo 18) v16.0.1.3
+# Remote Receipt Import (Odoo 16 → Odoo 18) v16.0.1.4
+
+**Nuevas mejoras UX v1.4:**
+- 🎯 **Barra de progreso visual**: Muestra el estado del proceso en tiempo real
+- 📊 **Notificaciones**: Alertas sobre inicio y finalización de la importación
+- ✅ **Feedback continuo**: El usuario ve cuántas filas se han procesado
+- 🔄 **Proceso no bloqueante**: Puedes cerrar el wizard mientras continúa el procesamiento
+- 📈 **Resumen de resultados**: Muestra estadísticas al finalizar
 
 **Optimizaciones de rendimiento v1.3:**
 - ✅ **Búsqueda batch de partners**: 1 llamada XML-RPC en lugar de N (reducción ~95% de llamadas)

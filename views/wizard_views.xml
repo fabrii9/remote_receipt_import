@@ -6,20 +6,34 @@
     <field name="model">remote.payment.import.wizard</field>
     <field name="arch" type="xml">
       <form string="Importar pagos (Odoo 18)">
+        <header>
+          <field name="state" widget="statusbar" statusbar_visible="draft,processing,done"/>
+        </header>
         <group>
-          <field name="upload" filename="filename"/>
-          <field name="filename"/>
-          <div class="o_form_label">Formato: XLSX (openpyxl) o CSV con encabezados.</div>
-          <div class="o_form_label">
-            Columnas esperadas: 'de Pago' (fecha), 
-            '<b>Tipo de Operación</b>' = <i>CUIT/DNI</i>, 
-            '<b>Operación Relacionada</b>' = <i>Memo</i>,
-            'Importe'.
+          <field name="upload" filename="filename" attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+          <field name="filename" invisible="1"/>
+          <div class="o_form_label" attrs="{'invisible': [('state', '!=', 'draft')]}">
+            <p>Formato: XLSX (openpyxl) o CSV con encabezados.</p>
+            <p>Columnas esperadas: 'de Pago' (fecha), '<b>Tipo de Operación</b>' = <i>CUIT/DNI</i>, '<b>Operación Relacionada</b>' = <i>Memo</i>, 'Importe'.</p>
+          </div>
+        </group>
+        <group attrs="{'invisible': [('state', '=', 'draft')]}">
+          <group>
+            <field name="total_rows" readonly="1"/>
+            <field name="processed_rows" readonly="1"/>
+          </group>
+          <field name="progress_message" widget="text" readonly="1" colspan="2" attrs="{'invisible': [('progress_message', '=', False)]}"/>
+          <div class="alert alert-info" role="alert" attrs="{'invisible': [('state', '!=', 'processing')]}">
+            <i class="fa fa-spinner fa-spin"/> Procesando... El proceso continúa en segundo plano. Puedes cerrar esta ventana.
+          </div>
+          <div class="alert alert-success" role="alert" attrs="{'invisible': [('state', '!=', 'done')]}">
+            <i class="fa fa-check-circle"/> Importación completada. Revisa los logs para ver los resultados.
           </div>
         </group>
         <footer>
-          <button string="Procesar" type="object" name="action_process" class="btn-primary"/>
-          <button string="Cancelar" special="cancel" class="btn-secondary"/>
+          <button string="Procesar" type="object" name="action_process" class="btn-primary" attrs="{'invisible': [('state', '!=', 'draft')]}"/>
+          <button string="Ver Logs" type="object" name="action_view_logs" class="btn-primary" attrs="{'invisible': [('state', '=', 'draft')]}"/>
+          <button string="Cerrar" special="cancel" class="btn-secondary"/>
         </footer>
       </form>
     </field>

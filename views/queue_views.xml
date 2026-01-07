@@ -177,14 +177,14 @@
     <menuitem
         id="menu_payment_import_checkpoint"
         name="Dashboard de Progreso"
-        parent="remote_receipt_import.menu_remote_receipt_import_root"
+        parent="menu_remote_import_main"
         action="action_payment_import_checkpoint"
         sequence="15"/>
 
     <menuitem
         id="menu_payment_import_queue"
         name="Cola de Procesamiento"
-        parent="remote_receipt_import.menu_remote_receipt_import_root"
+        parent="menu_remote_import_main"
         action="action_payment_import_queue_line"
         sequence="16"/>
 </odoo>

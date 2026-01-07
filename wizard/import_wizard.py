@@ -415,332 +415,107 @@ class RemotePaymentImportWizard(models.TransientModel):
         return rows
 
     # -------------------------
-    # Proceso principal
+    # Proceso principal (ARQUITECTURA ROBUSTA: Solo crea cola)
     # -------------------------
     def action_process(self):
+        """
+        Fase 1: Ingesta - Solo valida y crea registros en cola.
+        NO procesa, NO llama al remoto.
+        El procesamiento lo hace el job asíncrono.
+        """
         self.ensure_one()
         if not self.upload:
             raise UserError(_("Subí un archivo primero."))
 
-        url, db, user, pwd, journal_id, pm_line_id, tolerance = self._read_settings()
-        uid, objects = self._xmlrpc_env(url, db, user, pwd)
-
-        # Determinar compañía del diario y contextos
-        j_read = self._execute_kw_with_retry(objects, db, uid, pwd, "account.journal", "read", [[journal_id], ["company_id"]])
-        if not j_read:
-            raise UserError(_("No se pudo leer el diario ID %s en Odoo 18.") % journal_id)
-        company_field = j_read[0].get("company_id")
-        journal_company_id = company_field[0] if isinstance(company_field, (list, tuple)) else (company_field or False)
-        if not journal_company_id:
-            raise UserError(_("El diario configurado no tiene compañía asignada."))
-
-        try:
-            all_company_ids = self._execute_kw_with_retry(objects, db, uid, pwd, "res.company", "search", [[]])
-        except Exception:
-            all_company_ids = [journal_company_id]
-
-        ctx_any_company = {"active_test": False, "allowed_company_ids": all_company_ids}
-        ctx_journal_company = {"active_test": False, "allowed_company_ids": [journal_company_id], "force_company": journal_company_id}
-
+        _logger = logging.getLogger(__name__)
+        
+        # Leer y validar archivo
         content = base64.b64decode(self.upload)
         rows = self._read_rows(content, self.filename or "")
-
-        # Actualizar estado del wizard
-        self.write({
-            'state': 'processing',
-            'total_rows': len(rows),
-            'processed_rows': 0,
-            'progress_message': f'Iniciando importación de {len(rows)} filas...'
-        })
-        self.env.cr.commit()
-
+        
+        if not rows:
+            raise UserError(_("El archivo no contiene filas válidas para procesar."))
+        
+        _logger.info(f"📥 Ingesta: {len(rows)} filas del archivo {self.filename}")
+        
+        # Crear log/batch
         log = self.env["remote.payment.import.log"].sudo().create({
             "file_name": self.filename or "archivo",
         })
-        # Commit inicial para liberar lock y permitir que otros procesos funcionen
-        self.env.cr.commit()
-
-        _logger = logging.getLogger(__name__)
-        _logger.info(f"Iniciando importación de {len(rows)} filas")
         
-        # Notificación al usuario (bus notification)
-        try:
-            self.env['bus.bus']._sendone(self.env.user.partner_id, 'simple_notification', {
-                'type': 'info',
-                'title': 'Importación de Pagos',
-                'message': f'Procesando {len(rows)} filas. El proceso continuará en segundo plano.',
-                'sticky': False,
-            })
-        except Exception:
-            pass  # Si falla la notificación, continuar igual
+        # Crear checkpoint
+        checkpoint = self.env["payment.import.checkpoint"].sudo().create({
+            "batch_id": log.id,
+            "total_rows": len(rows),
+            "state": "running",
+        })
         
-        # Procesar fila por fila (lógica original sin batch de partners)
-        lines_to_create = []
-        batch_size = 50  # Crear logs cada 50 filas para liberar memoria
-        
+        # Crear registros en cola (batch creation para performance)
+        queue_vals = []
         for idx, row in enumerate(rows, start=1):
-            fecha = row["fecha_pago"]
-            tipo_raw = row["tipo_operacion"]            # AHORA es el CUIT/DNI
-            memo_raw = row["operacion_relacionada"]     # para el memo
-            importe = float(row["importe"] or 0.0)
-
-            cuit_digits = self._normalize_cuit(tipo_raw)
-            line_vals = {
-                "log_id": log.id,
-                "fecha_pago": fecha,
-                "tipo_operacion": str(tipo_raw or ""),
-                "operacion_relacionada": str(memo_raw or ""),
-                "importe": importe,
-                "status": "error",
-                "message": "",
-            }
-
-            try:
-                # Variantes del CUIT/DNI (incluye valor original)
-                variants = self._vat_variants(tipo_raw, cuit_digits)
-                if not variants:
-                    line_vals.update({
-                        "status": "partner_not_found",
-                        "message": "No hay CUIT/DNI válido (tomado de 'Tipo de Operación')."
-                    })
-                    lines_to_create.append(line_vals)
-                    continue
-
-                # Dominio OR para vat/ref/commercial_partner_id.vat
-                clauses = []
-                for v in variants:
-                    clauses.extend([
-                        ("vat", "=", v),
-                        ("ref", "=", v),
-                        ("commercial_partner_id.vat", "=", v),
-                    ])
-                domain = ["|"] * (len(clauses) - 1) + clauses if clauses else [("id", "=", 0)]
-
-                # Buscar en todas las compañías (incluye archivados)
-                partner_ids_all = self._execute_kw_with_retry(
-                    objects, db, uid, pwd, "res.partner", "search",
-                    [domain],
-                    {"limit": 10, "context": ctx_any_company}
-                )
-
-                # Fallback ILIKE si no encontró por igualdad
-                if not partner_ids_all:
-                    clauses_ilike = []
-                    for v in variants:
-                        clauses_ilike.extend([
-                            ("vat", "ilike", v),
-                            ("ref", "ilike", v),
-                            ("commercial_partner_id.vat", "ilike", v),
-                        ])
-                    domain_ilike = ["|"] * (len(clauses_ilike) - 1) + clauses_ilike if clauses_ilike else [("id", "=", 0)]
-                    partner_ids_all = self._execute_kw_with_retry(
-                        objects, db, uid, pwd, "res.partner", "search",
-                        [domain_ilike],
-                        {"limit": 10, "context": ctx_any_company}
-                    )
-
-                if not partner_ids_all:
-                    line_vals.update({
-                        "status": "partner_not_found",
-                        "message": f"No se encontró partner (vat/ref) para {cuit_digits}."
-                    })
-                    lines_to_create.append(line_vals)
-                    continue
-
-                # Leer candidatos
-                partners_data = self._execute_kw_with_retry(
-                    objects, db, uid, pwd, "res.partner", "read",
-                    [partner_ids_all, ["name", "company_id"]],
-                    {"context": ctx_any_company}
-                )
-
-                def _m2o_id(val):
-                    if isinstance(val, (list, tuple)) and val:
-                        return val[0]
-                    if isinstance(val, int):
-                        return val
-                    return False
-
-                # Elegir partner por compañía del diario (o sin compañía)
-                chosen = None
-                fallback_none_company = None
-                for p in partners_data:
-                    cid = _m2o_id(p.get("company_id"))
-                    if cid == journal_company_id:
-                        chosen = p
-                        break
-                    if not cid and not fallback_none_company:
-                        fallback_none_company = p
-                if not chosen:
-                    chosen = fallback_none_company or partners_data[0]
-
-                partner_id = chosen["id"] if isinstance(chosen.get("id"), int) else None
-                if not partner_id:
-                    line_vals.update({
-                        "status": "partner_not_found",
-                        "message": f"No se pudo determinar el ID del partner para {cuit_digits}."
-                    })
-                    lines_to_create.append(line_vals)
-                    continue
-
-                line_vals["partner_id"] = partner_id
-                line_vals["partner_name"] = chosen.get("name")
-
-                # Deuda en la compañía del diario
-                aml_domain = [
-                    ("partner_id", "=", partner_id),
-                    ("account_id.account_type", "=", "asset_receivable"),
-                    ("reconciled", "=", False),
-                    ("parent_state", "=", "posted"),
-                    ("company_id", "=", journal_company_id),
-                ]
-                aml_ids = self._execute_kw_with_retry(
-                    objects, db, uid, pwd, "account.move.line", "search",
-                    [aml_domain],
-                    {"limit": 0, "context": ctx_journal_company}
-                )
-                deuda = 0.0
-                if aml_ids:
-                    aml_read = self._execute_kw_with_retry(
-                        objects, db, uid, pwd, "account.move.line", "read",
-                        [aml_ids, ["amount_residual"]],
-                        {"context": ctx_journal_company}
-                    )
-                    deuda = sum((l.get("amount_residual") or 0.0) for l in aml_read)
-
-                line_vals["deuda_detectada"] = deuda
-
-                # ¿Coincide dentro de la tolerancia?
-                if abs(importe - deuda) <= tolerance:
-                    payment_vals = {
-                        "payment_type": "inbound",
-                        "partner_type": "customer",
-                        "partner_id": partner_id,
-                        "amount": round(importe, 2),
-                        "date": fecha.strftime("%Y-%m-%d") if fecha else fields.Date.today().strftime("%Y-%m-%d"),
-                        "journal_id": journal_id,
-                        "company_id": journal_company_id,
-                        # MEMO desde Operación Relacionada
-                        "memo": str(memo_raw or ""),
-                    }
-                    if pm_line_id:
-                        payment_vals["payment_method_line_id"] = pm_line_id
-
-                    payment_id = self._execute_kw_with_retry(
-                        objects, db, uid, pwd, "account.payment", "create",
-                        [payment_vals],
-                        {"context": ctx_journal_company}
-                    )
-
-                    # Intentar validar y SIEMPRE chequear el estado real en el server
-                    post_error = None
-                    state = "draft"
-                    try:
-                        self._execute_kw_with_retry(
-                            objects, db, uid, pwd, "account.payment", "action_post",
-                            [[payment_id]],
-                            {"context": ctx_journal_company}
-                        )
-                    except Exception as e_post:
-                        post_error = e_post
-                    finally:
-                        try:
-                            pdata = self._execute_kw_with_retry(
-                                objects, db, uid, pwd, "account.payment", "read",
-                                [[payment_id], ["state"]],
-                                {"context": ctx_journal_company}
-                            )
-                            if pdata:
-                                state = (pdata[0].get("state") or state)
-                        except Exception:
-                            pass
-
-                    if state in ("posted", "in_process"):
-                        line_vals.update({
-                            "payment_id": payment_id,
-                            "status": "approved",
-                            "message": f"Pago creado y validado (estado: {state})."
-                        })
-                    else:
-                        msg = f"Pago creado en borrador; no se pudo validar automáticamente (estado: {state})."
-                        if post_error:
-                            msg += f" Error: {post_error}"
-                        line_vals.update({
-                            "payment_id": payment_id,
-                            "status": "error",
-                            "message": msg
-                        })
-                else:
-                    line_vals.update({
-                        "status": "mismatch",
-                        "message": f"Importe {importe:.2f} distinto de deuda {deuda:.2f}."
-                    })
-
-            except Exception as e:
-                line_vals.update({
-                    "status": "error",
-                    "message": f"Excepción: {e}"
-                })
-
-            lines_to_create.append(line_vals)
-            
-            # Crear logs en batch cada 50 filas y hacer commit para liberar worker
-            if len(lines_to_create) >= batch_size:
-                self.env["remote.payment.import.log.line"].sudo().create(lines_to_create)
-                lines_to_create = []
-                
-                # Actualizar progreso
-                progress_pct = int((idx / len(rows)) * 100)
-                self.write({
-                    'processed_rows': idx,
-                    'progress_message': f'Procesadas {idx}/{len(rows)} filas ({progress_pct}%)'
-                })
-                
-                self.env.cr.commit()  # Liberar locks de BD para que otros endpoints funcionen
-                _logger.info(f"Procesadas {idx}/{len(rows)} filas, commit realizado")
+            import json
+            queue_vals.append({
+                "batch_id": log.id,
+                "row_number": idx,
+                "fecha_pago": row.get("fecha_pago"),
+                "tipo_operacion": str(row.get("tipo_operacion") or ""),
+                "operacion_relacionada": str(row.get("operacion_relacionada") or ""),
+                "importe": float(row.get("importe") or 0.0),
+                "row_data": json.dumps(row, default=str),  # Serializar para flexibilidad
+                "state": "pending",
+                "priority": 10,  # Prioridad normal
+            })
         
-        # Crear líneas restantes
-        if lines_to_create:
-            self.env["remote.payment.import.log.line"].sudo().create(lines_to_create)
-            self.env.cr.commit()
+        # Crear todas las líneas en batch
+        _logger.info(f"⏳ Creando {len(queue_vals)} registros en cola...")
+        self.env["payment.import.queue.line"].sudo().create(queue_vals)
+        self.env.cr.commit()
         
-        _logger.info(f"Importación completada: {len(rows)} filas procesadas")
+        _logger.info(f"✅ Cola creada exitosamente: {len(queue_vals)} registros")
         
-        # Actualizar estado final
-        log.refresh()  # Recargar para obtener lines_ids actualizados
-        approved = self.env['remote.payment.import.log.line'].sudo().search_count([
-            ('log_id', '=', log.id),
-            ('status', '=', 'approved')
-        ])
+        # Actualizar wizard
         self.write({
             'state': 'done',
-            'processed_rows': len(rows),
-            'progress_message': f'✓ Importación completada: {len(rows)} filas procesadas\n✓ Pagos aprobados: {approved}\n✓ Revisa los logs para más detalles'
+            'total_rows': len(rows),
+            'processed_rows': 0,
+            'progress_message': f'✓ Archivo cargado: {len(rows)} pagos en cola\n⏳ El procesamiento comenzará en background\n📊 Revisá el Dashboard de Progreso'
         })
         self.env.cr.commit()
         
-        # Notificación final
+        # Notificar al usuario
         try:
             self.env['bus.bus']._sendone(self.env.user.partner_id, 'simple_notification', {
                 'type': 'success',
-                'title': 'Importación Exitosa',
-                'message': f'✓ Completado: {approved} pagos creados de {len(rows)} filas',
+                'title': 'Archivo en Cola',
+                'message': f'✓ {len(rows)} pagos listos para procesar\nEl procesamiento se hará en segundo plano de forma segura.',
                 'sticky': True,
             })
         except Exception:
             pass
         
-        # Guardar el log_id para el método action_view_logs
-        self.env.context = dict(self.env.context, active_log_id=log.id)
-
-        # Retornar acción para recargar el wizard y mostrar estado
+        # Encolar el primer job de procesamiento (si queue_job está instalado)
+        try:
+            if hasattr(self.env["payment.import.queue.line"], "with_delay"):
+                # queue_job está disponible
+                self.env["payment.import.queue.line"].with_delay(
+                    priority=5,
+                    description=f"Procesar pagos: {self.filename}"
+                ).process_queue_batch(batch_id=log.id, checkpoint_id=checkpoint.id)
+                _logger.info(f"🚀 Job encolado para procesar batch {log.id}")
+            else:
+                # Fallback: será procesado por cron
+                _logger.info(f"⏰ queue_job no disponible, será procesado por cron")
+        except Exception as e:
+            _logger.warning(f"⚠️ No se pudo encolar job: {e}. Será procesado por cron.")
+        
+        # Retornar a vista de progreso
         return {
             'type': 'ir.actions.act_window',
-            'res_model': self._name,
-            'res_id': self.id,
+            'res_model': 'payment.import.checkpoint',
+            'res_id': checkpoint.id,
             'view_mode': 'form',
-            'target': 'new',
-            'context': {'active_log_id': log.id}
+            'target': 'current',
+            'context': {'batch_id': log.id}
         }
     
     def action_view_logs(self):

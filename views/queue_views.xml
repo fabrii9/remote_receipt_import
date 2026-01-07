@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Vista de checkpoint (Dashboard de progreso) -->
+    <record id="view_payment_import_checkpoint_form" model="ir.ui.view">
+        <field name="name">payment.import.checkpoint.form</field>
+        <field name="model">payment.import.checkpoint</field>
+        <field name="arch" type="xml">
+            <form string="Progreso de Importación" create="false" edit="false" delete="false">
+                <header>
+                    <field name="state" widget="statusbar" statusbar_visible="running,paused,completed,failed"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="batch_id" readonly="1"/>
+                        </h1>
+                    </div>
+                    
+                    <group>
+                        <group string="Progreso General">
+                            <field name="total_rows"/>
+                            <field name="processed_rows"/>
+                            <field name="progress_percentage" widget="progressbar"/>
+                        </group>
+                        <group string="Tiempos">
+                            <field name="started_at"/>
+                            <field name="last_checkpoint_at"/>
+                            <field name="completed_at"/>
+                        </group>
+                    </group>
+                    
+                    <group string="Resultados">
+                        <group>
+                            <field name="success_count" string="✅ Exitosos"/>
+                            <field name="skipped_count" string="⏭️ Omitidos"/>
+                        </group>
+                        <group>
+                            <field name="failed_count" string="❌ Fallidos"/>
+                        </group>
+                    </group>
+                    
+                    <group string="Estado" attrs="{'invisible': [('error_message', '=', False)]}">
+                        <field name="error_message" nolabel="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_payment_import_checkpoint_tree" model="ir.ui.view">
+        <field name="name">payment.import.checkpoint.tree</field>
+        <field name="model">payment.import.checkpoint</field>
+        <field name="arch" type="xml">
+            <tree string="Checkpoints de Importación" create="false" delete="false">
+                <field name="batch_id"/>
+                <field name="total_rows"/>
+                <field name="processed_rows"/>
+                <field name="progress_percentage" widget="progressbar"/>
+                <field name="success_count"/>
+                <field name="failed_count"/>
+                <field name="skipped_count"/>
+                <field name="state"/>
+                <field name="started_at"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- Vista de cola -->
+    <record id="view_payment_import_queue_line_tree" model="ir.ui.view">
+        <field name="name">payment.import.queue.line.tree</field>
+        <field name="model">payment.import.queue.line</field>
+        <field name="arch" type="xml">
+            <tree string="Cola de Pagos" create="false" delete="false" decoration-success="state=='done'" decoration-danger="state=='failed'" decoration-warning="state=='pending'" decoration-muted="state=='skipped'">
+                <field name="row_number"/>
+                <field name="tipo_operacion"/>
+                <field name="partner_name"/>
+                <field name="importe"/>
+                <field name="fecha_pago"/>
+                <field name="state"/>
+                <field name="attempts"/>
+                <field name="error_message"/>
+                <field name="processing_time"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_payment_import_queue_line_form" model="ir.ui.view">
+        <field name="name">payment.import.queue.line.form</field>
+        <field name="model">payment.import.queue.line</field>
+        <field name="arch" type="xml">
+            <form string="Registro de Cola" create="false" delete="false">
+                <header>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group string="Datos del Pago">
+                            <field name="row_number"/>
+                            <field name="fecha_pago"/>
+                            <field name="tipo_operacion"/>
+                            <field name="operacion_relacionada"/>
+                            <field name="importe"/>
+                        </group>
+                        <group string="Estado">
+                            <field name="state"/>
+                            <field name="attempts"/>
+                            <field name="max_attempts"/>
+                            <field name="scheduled_date"/>
+                            <field name="priority"/>
+                        </group>
+                    </group>
+                    <group string="Resultado">
+                        <group>
+                            <field name="partner_id"/>
+                            <field name="partner_name"/>
+                            <field name="payment_id"/>
+                        </group>
+                        <group>
+                            <field name="processing_time"/>
+                        </group>
+                    </group>
+                    <group string="Error" attrs="{'invisible': [('error_message', '=', False)]}">
+                        <field name="error_message" nolabel="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_payment_import_queue_line_search" model="ir.ui.view">
+        <field name="name">payment.import.queue.line.search</field>
+        <field name="model">payment.import.queue.line</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="batch_id"/>
+                <field name="tipo_operacion"/>
+                <field name="partner_name"/>
+                <filter name="pending" string="Pendientes" domain="[('state', '=', 'pending')]"/>
+                <filter name="processing" string="Procesando" domain="[('state', '=', 'processing')]"/>
+                <filter name="done" string="Completados" domain="[('state', '=', 'done')]"/>
+                <filter name="failed" string="Fallidos" domain="[('state', '=', 'failed')]"/>
+                <filter name="skipped" string="Omitidos" domain="[('state', '=', 'skipped')]"/>
+                <group expand="0" string="Agrupar por">
+                    <filter name="group_by_batch" string="Lote" context="{'group_by': 'batch_id'}"/>
+                    <filter name="group_by_state" string="Estado" context="{'group_by': 'state'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- Acciones -->
+    <record id="action_payment_import_checkpoint" model="ir.actions.act_window">
+        <field name="name">Dashboard de Progreso</field>
+        <field name="res_model">payment.import.checkpoint</field>
+        <field name="view_mode">tree,form</field>
+        <field name="context">{}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No hay importaciones en progreso
+            </p>
+        </field>
+    </record>
+
+    <record id="action_payment_import_queue_line" model="ir.actions.act_window">
+        <field name="name">Cola de Procesamiento</field>
+        <field name="res_model">payment.import.queue.line</field>
+        <field name="view_mode">tree,form</field>
+        <field name="context">{'search_default_pending': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No hay registros en la cola
+            </p>
+        </field>
+    </record>
+
+    <!-- Menús -->
+    <menuitem
+        id="menu_payment_import_checkpoint"
+        name="Dashboard de Progreso"
+        parent="remote_receipt_import.menu_remote_receipt_import_root"
+        action="action_payment_import_checkpoint"
+        sequence="15"/>
+
+    <menuitem
+        id="menu_payment_import_queue"
+        name="Cola de Procesamiento"
+        parent="remote_receipt_import.menu_remote_receipt_import_root"
+        action="action_payment_import_queue_line"
+        sequence="16"/>
+</odoo>

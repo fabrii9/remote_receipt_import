@@ -1,20 +1,25 @@
 # -*- coding: utf-8 -*-
 {
     "name": "Remote Receipt Import (O16 → O18)",
-    "version": "16.0.1.7",
-    "summary": "Importa pagos desde Excel/CSV y crea recibos en Odoo 18. Búsqueda individual por partner (lógica original) con retry automático.",
+    "version": "16.0.2.0",
+    "summary": "Importación de pagos con arquitectura robusta: cola asíncrona, circuit breaker, rate limiting y procesamiento resiliente.",
     "author": "Fabrizio + ChatGPT",
     "license": "AGPL-3",
-    "depends": ["base", "account"],
+    "category": "Accounting",
+    "depends": ["base", "account", "bus"],
     "data": [
         "security/ir.model.access.csv",
-        "views/settings_views.xml",  # raíz + acción config + menú config
-        "views/wizard_views.xml",    # acción wizard + menú wizard
-        "views/log_views.xml"        # acción logs + menú logs
+        "data/cron.xml",             # cron para procesamiento asíncrono
+        "views/settings_views.xml",  # configuración
+        "views/wizard_views.xml",    # wizard de ingesta
+        "views/log_views.xml",       # logs históricos
+        "views/queue_views.xml"      # dashboard de cola y progreso
     ],
     "external_dependencies": {
         "python": ["openpyxl"]
     },
     "application": True,
-    "installable": True
+    "installable": True,
+    "auto_install": False,
+    "post_init_hook": None,
 }

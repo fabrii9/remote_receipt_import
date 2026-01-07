@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Cron para procesar cola de pagos (fallback si queue_job no está disponible) -->
+    <record id="cron_process_payment_queue" model="ir.cron">
+        <field name="name">Procesar Cola de Pagos (Background)</field>
+        <field name="model_id" ref="model_payment_import_queue_line"/>
+        <field name="state">code</field>
+        <field name="code">model.cron_process_all_batches()</field>
+        <field name="interval_number">2</field>
+        <field name="interval_type">minutes</field>
+        <field name="numbercall">-1</field>
+        <field name="active" eval="True"/>
+        <field name="doall" eval="False"/>
+    </record>
+</odoo>

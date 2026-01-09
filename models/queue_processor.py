@@ -4,6 +4,7 @@ Procesador asíncrono de cola de pagos.
 Este módulo contiene la lógica de procesamiento que se ejecuta en background.
 """
 import time
+import random
 import logging
 import xmlrpc.client
 from datetime import datetime
@@ -26,6 +27,39 @@ CIRCUIT_BREAKER = CircuitBreaker(
 
 class PaymentImportQueueLineProcessor(models.Model):
     _inherit = "payment.import.queue.line"
+
+    def _execute_kw_with_retry(
+        self,
+        objects,
+        db,
+        uid,
+        pwd,
+        model,
+        method,
+        args,
+        kwargs=None,
+        max_retries=6,
+        base_backoff=1.5,
+        max_sleep=20.0,
+    ):
+        """Wrapper para execute_kw con reintentos ante HTTP 429."""
+        kwargs = kwargs or {}
+        attempt = 0
+        while True:
+            try:
+                return objects.execute_kw(db, uid, pwd, model, method, args, kwargs)
+            except xmlrpc.client.ProtocolError as e:
+                # 429 Too Many Requests
+                if getattr(e, "errcode", None) == 429 and attempt < max_retries:
+                    attempt += 1
+                    delay = min(max_sleep, base_backoff * attempt) + random.uniform(0, 0.4)
+                    _logger.warning(
+                        "XML-RPC 429 en %s.%s intento=%s/%s; durmiendo %.2fs",
+                        model, method, attempt, max_retries, delay
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
 
     @api.model
     def process_queue_batch(self, batch_id, checkpoint_id, batch_size=30):
@@ -219,8 +253,8 @@ class PaymentImportQueueLineProcessor(models.Model):
             ])
         domain = ["|"] * (len(clauses) - 1) + clauses if clauses else [("id", "=", 0)]
         
-        partner_ids_all = objects.execute_kw(
-            db, uid, pwd, "res.partner", "search",
+        partner_ids_all = self._execute_kw_with_retry(
+            objects, db, uid, pwd, "res.partner", "search",
             [domain],
             {"limit": 10, "context": ctx_any_company}
         )
@@ -235,8 +269,8 @@ class PaymentImportQueueLineProcessor(models.Model):
                     ("commercial_partner_id.vat", "ilike", v),
                 ])
             domain_ilike = ["|"] * (len(clauses_ilike) - 1) + clauses_ilike if clauses_ilike else [("id", "=", 0)]
-            partner_ids_all = objects.execute_kw(
-                db, uid, pwd, "res.partner", "search",
+            partner_ids_all = self._execute_kw_with_retry(
+                objects, db, uid, pwd, "res.partner", "search",
                 [domain_ilike],
                 {"limit": 10, "context": ctx_any_company}
             )
@@ -246,8 +280,8 @@ class PaymentImportQueueLineProcessor(models.Model):
             return
         
         # Leer y elegir partner
-        partners_data = objects.execute_kw(
-            db, uid, pwd, "res.partner", "read",
+        partners_data = self._execute_kw_with_retry(
+            objects, db, uid, pwd, "res.partner", "read",
             [partner_ids_all, ["name", "company_id"]],
             {"context": ctx_any_company}
         )
@@ -282,16 +316,16 @@ class PaymentImportQueueLineProcessor(models.Model):
             ("parent_state", "=", "posted"),
             ("company_id", "=", journal_company_id),
         ]
-        aml_ids = objects.execute_kw(
-            db, uid, pwd, "account.move.line", "search",
+        aml_ids = self._execute_kw_with_retry(
+            objects, db, uid, pwd, "account.move.line", "search",
             [aml_domain],
             {"limit": 0, "context": ctx_journal_company}
         )
         
         deuda = 0.0
         if aml_ids:
-            aml_read = objects.execute_kw(
-                db, uid, pwd, "account.move.line", "read",
+            aml_read = self._execute_kw_with_retry(
+                objects, db, uid, pwd, "account.move.line", "read",
                 [aml_ids, ["amount_residual"]],
                 {"context": ctx_journal_company}
             )
@@ -344,16 +378,16 @@ class PaymentImportQueueLineProcessor(models.Model):
         if pm_line_id:
             payment_vals["payment_method_line_id"] = pm_line_id
         
-        payment_id = objects.execute_kw(
-            db, uid, pwd, "account.payment", "create",
+        payment_id = self._execute_kw_with_retry(
+            objects, db, uid, pwd, "account.payment", "create",
             [payment_vals],
             {"context": ctx_journal_company}
         )
         
         # Validar payment
         try:
-            objects.execute_kw(
-                db, uid, pwd, "account.payment", "action_post",
+            self._execute_kw_with_retry(
+                objects, db, uid, pwd, "account.payment", "action_post",
                 [[payment_id]],
                 {"context": ctx_journal_company}
             )

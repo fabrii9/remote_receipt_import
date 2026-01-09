@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from datetime import timedelta
 from odoo import api, fields, models
 
 
@@ -83,7 +84,7 @@ class PaymentImportQueueLine(models.Model):
         else:
             # Calcular backoff exponencial: 2^attempts minutos
             backoff_minutes = 2 ** self.attempts
-            scheduled_date = fields.Datetime.now() + fields.timedelta(minutes=backoff_minutes)
+            scheduled_date = fields.Datetime.now() + timedelta(minutes=backoff_minutes)
             self.write({
                 'state': 'pending',
                 'error_message': error_msg,

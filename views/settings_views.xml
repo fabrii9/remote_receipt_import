@@ -1,34 +1,71 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-  <!-- Vista de configuración -->
-  <record id="view_remote_receipt_settings_wizard" model="ir.ui.view">
-    <field name="name">remote.receipt.settings.wizard.form</field>
-    <field name="model">remote.receipt.settings.wizard</field>
+  <!-- Vista de configuración (FORM) -->
+  <record id="view_remote_receipt_settings_form" model="ir.ui.view">
+    <field name="name">remote.receipt.settings.form</field>
+    <field name="model">remote.receipt.settings</field>
     <field name="arch" type="xml">
-      <form string="Configurar conexión (Odoo 18)">
-        <group>
-          <field name="remote_o18_url" placeholder="https://mi-odoo18.com"/>
-          <field name="remote_o18_db" placeholder="nombre_bd"/>
-          <field name="remote_o18_user" placeholder="usuario@dominio.com"/>
-          <field name="remote_o18_password" password="True" placeholder="••••••••"/>
-          <field name="remote_payment_journal_id"/>
-          <field name="remote_payment_method_line_id"/>
-          <field name="amount_tolerance"/>
-        </group>
-        <footer>
-          <button string="Guardar" type="object" name="action_save" class="btn-primary"/>
-          <button string="Cancelar" special="cancel" class="btn-secondary"/>
-        </footer>
+      <form string="Configuración conexión Odoo 18">
+        <sheet>
+          <div class="oe_title">
+            <h1>
+              <field name="remote_o18_url" placeholder="https://mi-odoo18.com" required="1"/>
+            </h1>
+          </div>
+          <group>
+            <group string="Conexión">
+              <field name="remote_o18_db" placeholder="nombre_bd" required="1"/>
+              <field name="remote_o18_user" placeholder="usuario@dominio.com" required="1"/>
+              <field name="remote_o18_password" password="True" placeholder="••••••••" required="1"/>
+              <field name="active"/>
+            </group>
+            <group string="Parámetros de Pago">
+              <field name="remote_payment_journal_id" required="1"/>
+              <field name="remote_payment_method_line_id"/>
+              <field name="amount_tolerance"/>
+            </group>
+          </group>
+          <div class="alert alert-info" role="alert">
+            <i class="fa fa-info-circle" title="Información"/> <strong>Nota:</strong> Solo puede haber una configuración activa a la vez.
+          </div>
+        </sheet>
+        <div class="oe_chatter">
+          <field name="message_follower_ids"/>
+          <field name="activity_ids"/>
+          <field name="message_ids"/>
+        </div>
       </form>
     </field>
   </record>
 
+  <!-- Vista Tree -->
+  <record id="view_remote_receipt_settings_tree" model="ir.ui.view">
+    <field name="name">remote.receipt.settings.tree</field>
+    <field name="model">remote.receipt.settings</field>
+    <field name="arch" type="xml">
+      <tree string="Configuraciones">
+        <field name="remote_o18_url"/>
+        <field name="remote_o18_db"/>
+        <field name="remote_o18_user"/>
+        <field name="remote_payment_journal_id"/>
+        <field name="active"/>
+      </tree>
+    </field>
+  </record>
+
   <!-- Acción de configuración -->
-  <record id="action_remote_receipt_settings_wizard" model="ir.actions.act_window">
-    <field name="name">Configurar conexión</field>
-    <field name="res_model">remote.receipt.settings.wizard</field>
-    <field name="view_mode">form</field>
-    <field name="target">new</field>
+  <record id="action_remote_receipt_settings" model="ir.actions.act_window">
+    <field name="name">Configuración</field>
+    <field name="res_model">remote.receipt.settings</field>
+    <field name="view_mode">tree,form</field>
+    <field name="help" type="html">
+      <p class="o_view_nocontent_smiling_face">
+        Crear una nueva configuración
+      </p>
+      <p>
+        Configure la conexión con su instancia de Odoo 18.
+      </p>
+    </field>
   </record>
 
   <!-- MENÚ RAÍZ -->
@@ -41,7 +78,7 @@
   <menuitem id="menu_remote_import_settings"
             name="Configuración"
             parent="menu_remote_import_main"
-            action="action_remote_receipt_settings_wizard"
+            action="action_remote_receipt_settings"
             sequence="5"
             groups="base.group_user"/>
 </odoo>

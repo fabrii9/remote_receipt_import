@@ -20,38 +20,94 @@ except Exception:
 import csv
 
 
-class RemotePaymentImportWizard(models.TransientModel):
-    _name = "remote.payment.import.wizard"
+class RemotePaymentImport(models.Model):
+    _name = "remote.payment.import"
     _description = "Importar pagos y crear recibos en Odoo 18"
+    _inherit = ['mail.thread', 'mail.activity.mixin']
+    _order = "create_date desc"
+    _rec_name = "filename"
 
-    upload = fields.Binary(string="Archivo (XLSX o CSV)", required=True)
-    filename = fields.Char(string="Nombre de archivo")
+    upload = fields.Binary(string="Archivo (XLSX o CSV)", attachment=True)
+    filename = fields.Char(string="Nombre de archivo", tracking=True)
     
     # Campos de progreso y estado
     state = fields.Selection([
         ('draft', 'Borrador'),
         ('processing', 'Procesando...'),
         ('done', 'Completado'),
-    ], string="Estado", default='draft')
+    ], string="Estado", default='draft', readonly=True, tracking=True)
     progress_message = fields.Text(string="Progreso", readonly=True)
     total_rows = fields.Integer(string="Total filas", readonly=True)
     processed_rows = fields.Integer(string="Filas procesadas", readonly=True)
+    
+    # Relaciones con logs
+    batch_id = fields.Many2one('remote.payment.import.log', string="Batch Log", readonly=True)
+    checkpoint_id = fields.Many2one('payment.import.checkpoint', string="Checkpoint", readonly=True)
+    
+    # Acción para ver dashboard
+    def action_view_dashboard(self):
+        self.ensure_one()
+        if not self.checkpoint_id:
+            raise UserError(_("No hay checkpoint asociado a esta importación"))
+        return {
+            'type': 'ir.actions.act_window',
+            'name': _('Dashboard de Progreso'),
+            'res_model': 'payment.import.checkpoint',
+            'res_id': self.checkpoint_id.id,
+            'view_mode': 'form',
+            'target': 'current',
+        }
+    
+    # Acción para ver cola
+    def action_view_queue(self):
+        self.ensure_one()
+        if not self.batch_id:
+            raise UserError(_("No hay batch asociado a esta importación"))
+        return {
+            'type': 'ir.actions.act_window',
+            'name': _('Cola de Procesamiento'),
+            'res_model': 'payment.import.queue.line',
+            'view_mode': 'tree,form',
+            'domain': [('batch_id', '=', self.batch_id.id)],
+            'context': {'default_batch_id': self.batch_id.id},
+            'target': 'current',
+        }
 
     # -------------------------
     # Helpers de configuración
     # -------------------------
     def _read_settings(self):
-        ICP = self.env['ir.config_parameter'].sudo()
-        url = ICP.get_param("remote_receipt_import.remote_o18_url")
-        db = ICP.get_param("remote_receipt_import.remote_o18_db")
-        user = ICP.get_param("remote_receipt_import.remote_o18_user")
-        pwd = ICP.get_param("remote_receipt_import.remote_o18_password")
-        journal_id = int(ICP.get_param("remote_receipt_import.remote_payment_journal_id") or 0)
-        pm_line_id = int(ICP.get_param("remote_receipt_import.remote_payment_method_line_id") or 0)
-        tol = float(ICP.get_param("remote_receipt_import.amount_tolerance") or 0.01)
-        if not url or not db or not user or not pwd or not journal_id:
-            raise UserError(_("Configurar primero en Contabilidad → Importación Remota → Configurar conexión."))
-        return url, db, user, pwd, journal_id, pm_line_id, tol
+        """Lee la configuración desde el modelo remote.receipt.settings"""
+        settings = self.env['remote.receipt.settings'].sudo().search([], limit=1, order='id desc')
+        
+        if not settings:
+            # Fallback: intentar leer desde ir.config_parameter (retrocompatibilidad)
+            ICP = self.env['ir.config_parameter'].sudo()
+            url = ICP.get_param("remote_receipt_import.remote_o18_url")
+            db = ICP.get_param("remote_receipt_import.remote_o18_db")
+            user = ICP.get_param("remote_receipt_import.remote_o18_user")
+            pwd = ICP.get_param("remote_receipt_import.remote_o18_password")
+            journal_id = int(ICP.get_param("remote_receipt_import.remote_payment_journal_id") or 0)
+            pm_line_id = int(ICP.get_param("remote_receipt_import.remote_payment_method_line_id") or 0)
+            tol = float(ICP.get_param("remote_receipt_import.amount_tolerance") or 0.01)
+            
+            if not url or not db or not user or not pwd or not journal_id:
+                raise UserError(_("Debes configurar la conexión primero. Ve a Contabilidad → Importación Remota → Configuración."))
+            return url, db, user, pwd, journal_id, pm_line_id, tol
+        
+        # Leer desde el modelo
+        if not settings.remote_o18_url or not settings.remote_o18_db or not settings.remote_o18_user or not settings.remote_o18_password or not settings.remote_payment_journal_id:
+            raise UserError(_("La configuración está incompleta. Ve a Contabilidad → Importación Remota → Configuración."))
+        
+        return (
+            settings.remote_o18_url,
+            settings.remote_o18_db,
+            settings.remote_o18_user,
+            settings.remote_o18_password,
+            settings.remote_payment_journal_id,  # Ya es int, no necesita .id
+            settings.remote_payment_method_line_id or 0,  # Ya es int
+            settings.amount_tolerance
+        )
 
     def _xmlrpc_env(self, url, db, user, pwd):
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
@@ -424,8 +480,8 @@ class RemotePaymentImportWizard(models.TransientModel):
         El procesamiento lo hace el job asíncrono.
         """
         self.ensure_one()
-        if not self.upload:
-            raise UserError(_("Subí un archivo primero."))
+        if not self.upload or not self.filename:
+            raise UserError(_("Debes subir un archivo antes de procesar."))
 
         _logger = logging.getLogger(__name__)
         

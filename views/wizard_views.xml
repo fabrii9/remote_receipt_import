@@ -1,57 +1,108 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-  <!-- Vista del wizard de importación -->
-  <record id="view_remote_payment_import_wizard" model="ir.ui.view">
-    <field name="name">remote.payment.import.wizard.form</field>
-    <field name="model">remote.payment.import.wizard</field>
+  <!-- Vista del formulario de importación -->
+  <record id="view_remote_payment_import_form" model="ir.ui.view">
+    <field name="name">remote.payment.import.form</field>
+    <field name="model">remote.payment.import</field>
     <field name="arch" type="xml">
       <form string="Importar pagos (Odoo 18)">
         <header>
+          <button string="Procesar" type="object" name="action_process" class="btn-primary" attrs="{'invisible': [('state', '!=', 'draft')]}"/>
+          <button string="Ver Dashboard" type="object" name="action_view_dashboard" class="btn-primary" attrs="{'invisible': [('state', '=', 'draft')]}"/>
+          <button string="Ver Cola" type="object" name="action_view_queue" class="btn-primary" attrs="{'invisible': [('state', '=', 'draft')]}"/>
           <field name="state" widget="statusbar" statusbar_visible="draft,processing,done"/>
         </header>
-        <group>
-          <field name="upload" filename="filename" attrs="{'readonly': [('state', '!=', 'draft')]}"/>
-          <field name="filename" invisible="1"/>
-          <div class="o_form_label" attrs="{'invisible': [('state', '!=', 'draft')]}">
-            <p>Formato: XLSX (openpyxl) o CSV con encabezados.</p>
-            <p>Columnas esperadas: 'de Pago' (fecha), '<b>Tipo de Operación</b>' = <i>CUIT/DNI</i>, '<b>Operación Relacionada</b>' = <i>Memo</i>, 'Importe'.</p>
+        <sheet>
+          <div class="oe_title" attrs="{'invisible': [('filename', '=', False)]}">
+            <h1>
+              <field name="filename" readonly="1"/>
+            </h1>
           </div>
-        </group>
-        <group attrs="{'invisible': [('state', '=', 'draft')]}">
           <group>
-            <field name="total_rows" readonly="1"/>
-            <field name="processed_rows" readonly="1"/>
+            <group string="Archivo">
+              <field name="filename" invisible="1"/>
+              <field name="upload" filename="filename" attrs="{'readonly': [('state', '!=', 'draft')]}"/>
+              <field name="create_date" readonly="1" string="Fecha de creación"/>
+            </group>
+            <group string="Progreso" attrs="{'invisible': [('state', '=', 'draft')]}">
+              <field name="total_rows" readonly="1"/>
+              <field name="processed_rows" readonly="1"/>
+              <field name="batch_id" readonly="1"/>
+              <field name="checkpoint_id" readonly="1"/>
+            </group>
           </group>
-          <field name="progress_message" widget="text" readonly="1" colspan="2" attrs="{'invisible': [('progress_message', '=', False)]}"/>
-          <div class="alert alert-info" role="alert" attrs="{'invisible': [('state', '!=', 'processing')]}">
-            <i class="fa fa-spinner fa-spin"/> Procesando... El proceso continúa en segundo plano. Puedes cerrar esta ventana.
+          <notebook attrs="{'invisible': [('state', '=', 'draft')]}">
+            <page string="Información">
+              <group>
+                <field name="progress_message" widget="text" readonly="1" nolabel="1"/>
+              </group>
+              <div class="alert alert-info" role="alert" attrs="{'invisible': [('state', '!=', 'processing')]}">
+                <i class="fa fa-spinner fa-spin"/> <strong>Procesando en segundo plano...</strong><br/>
+                El proceso continúa automáticamente. Puedes cerrar esta ventana y monitorear el progreso desde el Dashboard.
+              </div>
+              <div class="alert alert-success" role="alert" attrs="{'invisible': [('state', '!=', 'done')]}">
+                <i class="fa fa-check-circle"/> <strong>Importación completada.</strong><br/>
+                Revisa el Dashboard de Progreso y la Cola de Procesamiento para ver los resultados detallados.
+              </div>
+            </page>
+          </notebook>
+          <div class="oe_form_box_info oe_text_center" attrs="{'invisible': [('state', '!=', 'draft')]}">
+            <p><strong>Formato de archivo:</strong> XLSX (openpyxl) o CSV con encabezados</p>
+            <p><strong>Columnas esperadas:</strong></p>
+            <ul class="text-left" style="display: inline-block;">
+              <li><strong>Fecha de Pago</strong>: Fecha del pago</li>
+              <li><strong>Tipo de Operación</strong>: CUIT/DNI del partner</li>
+              <li><strong>Operación Relacionada</strong>: Memo/Referencia</li>
+              <li><strong>Importe</strong>: Monto del pago</li>
+            </ul>
           </div>
-          <div class="alert alert-success" role="alert" attrs="{'invisible': [('state', '!=', 'done')]}">
-            <i class="fa fa-check-circle"/> Importación completada. Revisa los logs para ver los resultados.
-          </div>
-        </group>
-        <footer>
-          <button string="Procesar" type="object" name="action_process" class="btn-primary" attrs="{'invisible': [('state', '!=', 'draft')]}"/>
-          <button string="Ver Logs" type="object" name="action_view_logs" class="btn-primary" attrs="{'invisible': [('state', '=', 'draft')]}"/>
-          <button string="Cerrar" special="cancel" class="btn-secondary"/>
-        </footer>
+        </sheet>
+        <div class="oe_chatter">
+          <field name="message_follower_ids"/>
+          <field name="activity_ids"/>
+          <field name="message_ids"/>
+        </div>
       </form>
     </field>
   </record>
 
-  <!-- Acción del wizard -->
-  <record id="action_remote_payment_import_wizard" model="ir.actions.act_window">
-    <field name="name">Importar pagos</field>
-    <field name="res_model">remote.payment.import.wizard</field>
-    <field name="view_mode">form</field>
-    <field name="target">new</field>
+  <!-- Vista Tree -->
+  <record id="view_remote_payment_import_tree" model="ir.ui.view">
+    <field name="name">remote.payment.import.tree</field>
+    <field name="model">remote.payment.import</field>
+    <field name="arch" type="xml">
+      <tree string="Importaciones">
+        <field name="filename"/>
+        <field name="create_date"/>
+        <field name="state" decoration-info="state == 'draft'" decoration-warning="state == 'processing'" decoration-success="state == 'done'"/>
+        <field name="total_rows"/>
+        <field name="processed_rows"/>
+        <field name="batch_id"/>
+      </tree>
+    </field>
   </record>
 
-  <!-- Menú del wizard -->
+  <!-- Acción del formulario -->
+  <record id="action_remote_payment_import" model="ir.actions.act_window">
+    <field name="name">Importar pagos</field>
+    <field name="res_model">remote.payment.import</field>
+    <field name="view_mode">tree,form</field>
+    <field name="help" type="html">
+      <p class="o_view_nocontent_smiling_face">
+        Crear una nueva importación
+      </p>
+      <p>
+        Sube un archivo XLSX o CSV con los pagos a procesar.<br/>
+        El sistema creará los recibos automáticamente en Odoo 18.
+      </p>
+    </field>
+  </record>
+
+  <!-- Menú de importación -->
   <menuitem id="menu_remote_import_wizard"
             name="Importar pagos"
             parent="menu_remote_import_main"
-            action="action_remote_payment_import_wizard"
+            action="action_remote_payment_import"
             sequence="10"
             groups="base.group_user"/>
 </odoo>

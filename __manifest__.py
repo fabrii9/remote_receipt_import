@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 {
     "name": "Remote Receipt Import (O16 → O18)",
-    "version": "16.0.2.0",
-    "summary": "Importación de pagos con arquitectura robusta: cola asíncrona, circuit breaker, rate limiting y procesamiento resiliente.",
+    "version": "16.0.2.2",
+    "summary": "Importación de pagos con arquitectura robusta: vistas normales (no wizards), cola asíncrona, circuit breaker, rate limiting y soporte para pagos parciales (Mercado Pago).",
     "author": "Fabrizio + ChatGPT",
     "license": "AGPL-3",
     "category": "Accounting",

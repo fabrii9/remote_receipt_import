@@ -62,9 +62,9 @@ class PaymentImportQueueLineProcessor(models.Model):
         
         # Obtener configuración
         try:
-            wizard = self.env["remote.payment.import.wizard"]
-            url, db, user, pwd, journal_id, pm_line_id, tolerance = wizard._read_settings()
-            uid, objects = wizard._xmlrpc_env(url, db, user, pwd)
+            import_model = self.env["remote.payment.import"]
+            url, db, user, pwd, journal_id, pm_line_id, tolerance = import_model._read_settings()
+            uid, objects = import_model._xmlrpc_env(url, db, user, pwd)
         except Exception as e:
             _logger.error(f"❌ Error en configuración: {e}")
             checkpoint.mark_failed(str(e))
@@ -125,7 +125,7 @@ class PaymentImportQueueLineProcessor(models.Model):
                         self._process_single_record(
                             record, objects, db, uid, pwd,
                             journal_id, journal_company_id, pm_line_id, tolerance,
-                            ctx_any_company, ctx_journal_company, wizard
+                            ctx_any_company, ctx_journal_company
                         )
                 
                 processing_time = time.time() - start_time
@@ -188,7 +188,7 @@ class PaymentImportQueueLineProcessor(models.Model):
 
     def _process_single_record(self, record, objects, db, uid, pwd,
                                journal_id, journal_company_id, pm_line_id, tolerance,
-                               ctx_any_company, ctx_journal_company, wizard):
+                               ctx_any_company, ctx_journal_company):
         """Procesa un solo registro de la cola."""
         
         import json
@@ -199,8 +199,11 @@ class PaymentImportQueueLineProcessor(models.Model):
         importe = record.importe
         fecha = record.fecha_pago
         
-        cuit_digits = wizard._normalize_cuit(tipo_raw)
-        variants = wizard._vat_variants(tipo_raw, cuit_digits)
+        # Obtener instancia del modelo de importación para usar sus métodos helper
+        import_model = self.env["remote.payment.import"]
+        
+        cuit_digits = import_model._normalize_cuit(tipo_raw)
+        variants = import_model._vat_variants(tipo_raw, cuit_digits)
         
         if not variants:
             record.mark_as_skipped("No hay CUIT/DNI válido")
@@ -294,10 +297,38 @@ class PaymentImportQueueLineProcessor(models.Model):
             )
             deuda = sum((l.get("amount_residual") or 0.0) for l in aml_read)
         
-        # Verificar tolerancia
-        if abs(importe - deuda) > tolerance:
-            record.mark_as_skipped(f"Mismatch: importe {importe:.2f} vs deuda {deuda:.2f}")
+        # NUEVA VALIDACIÓN: Permitir pagos parciales (pago <= deuda)
+        # Rechazar sobrepagos (pago > deuda) y montos insignificantes
+        
+        # Caso 1: Sobrepago - El pago es mayor que la deuda actual
+        if importe > deuda + tolerance:
+            record.mark_as_skipped(
+                f"Sobrepago rechazado: pago ${importe:.2f} excede deuda ${deuda:.2f} "
+                f"(tolerancia ${tolerance:.2f})"
+            )
+            _logger.warning(f"⚠️ Record {record.id}: Sobrepago detectado - Partner {partner_name}")
             return
+        
+        # Caso 2: Pago insignificante (< tolerancia)
+        if importe < tolerance:
+            record.mark_as_skipped(f"Monto insignificante: ${importe:.2f} < ${tolerance:.2f}")
+            _logger.info(f"ℹ️ Record {record.id}: Monto insignificante")
+            return
+        
+        # Caso 3: Sin deuda - No hay nada que pagar
+        if abs(deuda) < tolerance:
+            record.mark_as_skipped(
+                f"Sin deuda pendiente: cliente tiene deuda ${deuda:.2f}, "
+                f"pago ${importe:.2f} no aplicable"
+            )
+            _logger.info(f"ℹ️ Record {record.id}: Partner sin deuda - {partner_name}")
+            return
+        
+        # ✅ VALIDACIÓN EXITOSA: pago <= deuda (permite pagos parciales)
+        _logger.info(
+            f"✅ Record {record.id}: Pago parcial válido - "
+            f"${importe:.2f} <= ${deuda:.2f} (Partner: {partner_name})"
+        )
         
         # Crear payment
         payment_vals = {

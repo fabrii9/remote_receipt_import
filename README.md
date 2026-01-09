@@ -1,14 +1,44 @@
-# Remote Receipt Import - Arquitectura Robusta v16.0.2.0
+# Remote Receipt Import - Arquitectura Robusta v16.0.2.1
 
 **Importación de pagos entre instancias de Odoo con procesamiento asíncrono y protecciones de producción.**
 
 > **✨ Última Actualización**: 8 de enero de 2026  
-> **🎯 Estado**: Producción-ready - Arquitectura completa implementada  
-> **📦 Versión**: 16.0.2.0
+> **🎯 Estado**: Producción-ready - Soporte para pagos parciales Mercado Pago  
+> **📦 Versión**: 16.0.2.1
 
 ---
 
-## 📢 Cambios Recientes (v2.0)
+## 📢 Cambios Recientes
+
+### v2.1 - Soporte Pagos Parciales Mercado Pago 🎉
+
+**Problema**: Mercado Pago desglosa pagos en múltiples líneas (flete + productos), pero el sistema solo aceptaba pagos que coincidieran exactamente con la deuda total.
+
+**Ejemplo Real**:
+- Cliente debe: **$50.000**
+- MP envía: $10.000 (flete) + $30.000 (producto A) + $10.000 (producto B)
+- Antes: ❌ Ninguno se aplicaba (no coincidía con $50.000)
+- Ahora: ✅ Todos se aplican secuencialmente
+
+**Nueva Validación**:
+```python
+✅ Si pago <= deuda → Crear recibo (permite parciales)
+❌ Si pago > deuda → Rechazar (no sobrepagos)
+```
+
+**Flujo**:
+1. Línea 1: Deuda $50k → Pago $10k → ✅ Recibo creado → Deuda $40k
+2. Línea 2: Deuda $40k → Pago $30k → ✅ Recibo creado → Deuda $10k
+3. Línea 3: Deuda $10k → Pago $10k → ✅ Recibo creado → Deuda $0
+
+**Garantías**:
+- ✅ Deuda recalculada antes de cada línea
+- ✅ Procesamiento secuencial en orden
+- ✅ Sin sobrepagos (validación estricta)
+- ✅ Contabilidad Odoo estándar (conciliación parcial automática)
+- ✅ Idempotente (re-ejecuciones seguras)
+
+### v2.0 - Arquitectura Robusta
 
 Este módulo fue completamente rediseñado para evitar caídas del servidor remoto. La arquitectura anterior procesaba todos los registros síncronamente, bloqueando la UI y saturando los workers del Odoo remoto con miles de requests sin control.
 
@@ -186,9 +216,21 @@ pip install odoo-addon-queue_job
 2. Filtrar por "Fallidos"
 3. Ver columna "Mensaje de Error"
 4. Errores comunes:
-   - Partner no encontrado → CUIT inválido
-   - Mismatch → Importe ≠ Deuda
-   - HTTP 429 → Rate limit (se reintenta)
+   - **Partner no encontrado** → CUIT inválido en archivo
+   - **Sobrepago rechazado** → Pago mayor que deuda actual (validado)
+   - **Sin deuda pendiente** → Cliente ya pagó todo (común con pagos parciales MP)
+   - **HTTP 429** → Rate limit remoto (se reintenta automáticamente)
+
+### "Pagos de Mercado Pago no se aplican"
+
+**Verificar**: ¿Son pagos parciales (menores a la deuda)?
+
+**Solución**: ✅ v2.1 soporta pagos parciales. Los pagos se aplican secuencialmente:
+- Línea 1: $10k aplicado, quedan $40k
+- Línea 2: $30k aplicado, quedan $10k
+- Línea 3: $10k aplicado, deuda $0
+
+**Importante**: El orden del archivo importa. Procesar en orden cronológico de MP.
 
 ---
 
@@ -215,6 +257,19 @@ pip install odoo-addon-queue_job
 ---
 
 ## 📝 Changelog
+
+### v16.0.2.1 (2026-01-08) - **Pagos Parciales Mercado Pago** 💰
+**Nueva validación para pagos desglosados:**
+- ✨ **Soporte pagos parciales** - Acepta `pago <= deuda` (antes solo `pago == deuda`)
+- ✨ **Protección sobrepagos** - Rechaza `pago > deuda` con mensaje claro
+- ✨ **Recálculo automático** - Deuda se actualiza antes de cada línea
+- ✨ **Procesamiento secuencial** - Garantiza orden correcto de aplicación
+- 🎯 **Caso de uso**: Mercado Pago con flete + productos separados
+- 📊 **Ejemplo**: Deuda $50k → Pagos $10k + $30k + $10k → Todos aplicados ✅
+- 🔒 **Contabilidad correcta** - Usa conciliación parcial nativa de Odoo
+- ♻️ **Idempotente** - Re-ejecuciones seguras (deuda ya reducida)
+
+**Impacto**: Archivos de MP con múltiples líneas por cliente ahora funcionan correctamente.
 
 ### v16.0.2.0 (2026-01-08) - **Arquitectura Robusta** 🎉
 **Rediseño completo para producción:**

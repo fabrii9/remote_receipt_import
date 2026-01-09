@@ -80,13 +80,15 @@
       <field name="view_id" ref="view_remote_payment_import_log_tree"/>
     </record>
 
-    <!-- Menú -->
+    <!-- Menú deshabilitado - La información ahora está en Cola de Procesamiento -->
+    <!--
     <menuitem id="menu_remote_import_logs"
               name="Logs de importación"
               parent="menu_remote_import_main"
               action="action_remote_payment_import_log"
               sequence="20"
               groups="base.group_user"/>
+    -->
 
   </data>
 </odoo>

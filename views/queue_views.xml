@@ -71,15 +71,15 @@
         <field name="model">payment.import.queue.line</field>
         <field name="arch" type="xml">
             <tree string="Cola de Pagos" create="false" delete="false" decoration-success="state=='done'" decoration-danger="state=='failed'" decoration-warning="state=='pending'" decoration-muted="state=='skipped'">
-                <field name="row_number"/>
+                <field name="row_number" width="60px"/>
+                <field name="state" width="100px"/>
                 <field name="tipo_operacion"/>
                 <field name="partner_name"/>
-                <field name="importe"/>
+                <field name="importe" sum="Total"/>
                 <field name="fecha_pago"/>
-                <field name="state"/>
-                <field name="attempts"/>
-                <field name="error_message"/>
-                <field name="processing_time"/>
+                <field name="error_message" optional="show"/>
+                <field name="attempts" optional="hide"/>
+                <field name="processing_time" optional="hide"/>
             </tree>
         </field>
     </record>
@@ -135,9 +135,17 @@
                 <field name="batch_id"/>
                 <field name="tipo_operacion"/>
                 <field name="partner_name"/>
+                <field name="error_message"/>
                 <filter name="pending" string="Pendientes" domain="[('state', '=', 'pending')]"/>
                 <filter name="processing" string="Procesando" domain="[('state', '=', 'processing')]"/>
                 <filter name="done" string="Completados" domain="[('state', '=', 'done')]"/>
+                <filter name="skipped" string="Omitidos" domain="[('state', '=', 'skipped')]"/>
+                <filter name="failed" string="Fallidos" domain="[('state', '=', 'failed')]"/>
+                <filter name="with_errors" string="Con Errores" domain="[('error_message', '!=', False)]"/>
+                <group expand="0" string="Agrupar por">
+                    <filter name="group_state" string="Estado" context="{'group_by': 'state'}"/>
+                    <filter name="group_batch" string="Batch" context="{'group_by': 'batch_id'}"/>
+                </group>
                 <filter name="failed" string="Fallidos" domain="[('state', '=', 'failed')]"/>
                 <filter name="skipped" string="Omitidos" domain="[('state', '=', 'skipped')]"/>
                 <group expand="0" string="Agrupar por">

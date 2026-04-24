@@ -75,15 +75,20 @@ class PaymentImportQueueLine(models.Model):
         self.write(vals)
 
     def mark_as_failed(self, error_msg):
-        """Marca el registro como fallido."""
-        if self.attempts >= self.max_attempts:
+        """Marca el registro como fallido.
+
+        Si el error es un 429 Too Many Requests, siempre reprograma sin importar
+        la cantidad de intentos — nunca se marca permanentemente como fallido.
+        """
+        is_rate_limit = "429" in str(error_msg) or "Too Many Requests" in str(error_msg)
+        if not is_rate_limit and self.attempts >= self.max_attempts:
             self.write({
                 'state': 'failed',
                 'error_message': error_msg,
             })
         else:
-            # Calcular backoff exponencial: 2^attempts minutos
-            backoff_minutes = 2 ** self.attempts
+            # Backoff exponencial: 2^attempts minutos (mín. 1, máx. 60)
+            backoff_minutes = min(60, max(1, 2 ** self.attempts))
             scheduled_date = fields.Datetime.now() + timedelta(minutes=backoff_minutes)
             self.write({
                 'state': 'pending',

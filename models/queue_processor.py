@@ -110,13 +110,13 @@ class PaymentImportQueueLineProcessor(models.Model):
         
         # Obtener contextos (igual que antes)
         try:
-            j_read = objects.execute_kw(db, uid, pwd, "account.journal", "read", [[journal_id], ["company_id"]])
+            j_read = self._execute_kw_with_retry(objects, db, uid, pwd, "account.journal", "read", [[journal_id], ["company_id"]])
             if not j_read:
                 raise UserError(f"No se pudo leer el diario ID {journal_id}")
             company_field = j_read[0].get("company_id")
             journal_company_id = company_field[0] if isinstance(company_field, (list, tuple)) else company_field
-            
-            all_company_ids = objects.execute_kw(db, uid, pwd, "res.company", "search", [[]])
+
+            all_company_ids = self._execute_kw_with_retry(objects, db, uid, pwd, "res.company", "search", [[]])
         except Exception as e:
             _logger.error(f"❌ Error obteniendo contextos: {e}")
             checkpoint.mark_failed(str(e))
@@ -399,8 +399,8 @@ class PaymentImportQueueLineProcessor(models.Model):
             pass  # No importa si falla el post
         
         # Verificar estado
-        pdata = objects.execute_kw(
-            db, uid, pwd, "account.payment", "read",
+        pdata = self._execute_kw_with_retry(
+            objects, db, uid, pwd, "account.payment", "read",
             [[payment_id], ["state"]],
             {"context": ctx_journal_company}
         )

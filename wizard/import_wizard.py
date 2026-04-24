@@ -131,9 +131,9 @@ class RemotePaymentImport(models.Model):
         method,
         args,
         kwargs=None,
-        max_retries=6,
-        base_backoff=1.5,
-        max_sleep=20.0,
+        max_retries=12,
+        base_backoff=10.0,
+        max_sleep=180.0,
     ):
         """Wrapper centralizado para execute_kw con reintentos ante HTTP 429."""
         kwargs = kwargs or {}
@@ -145,7 +145,7 @@ class RemotePaymentImport(models.Model):
                 # 429 Too Many Requests
                 if getattr(e, "errcode", None) == 429 and attempt < max_retries:
                     attempt += 1
-                    delay = min(max_sleep, base_backoff * attempt) + random.uniform(0, 0.4)
+                    delay = min(max_sleep, base_backoff * attempt) + random.uniform(0, 3.0)
                     _logger = logging.getLogger(__name__)
                     _logger.warning(
                         "XML-RPC 429 en %s.%s intento=%s/%s; durmiendo %.2fs",

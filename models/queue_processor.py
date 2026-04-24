@@ -42,20 +42,24 @@ class PaymentImportQueueLineProcessor(models.Model):
         base_backoff=10.0,
         max_sleep=180.0,
     ):
-        """Wrapper para execute_kw con reintentos ante HTTP 429."""
+        """Wrapper para execute_kw con reintentos ante HTTP 429.
+
+        Para errores 429 reintenta indefinidamente (sin límite de intentos),
+        con delay creciente hasta max_sleep. Para otros errores propaga inmediatamente.
+        """
         kwargs = kwargs or {}
         attempt = 0
         while True:
             try:
                 return objects.execute_kw(db, uid, pwd, model, method, args, kwargs)
             except xmlrpc.client.ProtocolError as e:
-                # 429 Too Many Requests
-                if getattr(e, "errcode", None) == 429 and attempt < max_retries:
+                # 429 Too Many Requests → reintentar indefinidamente
+                if getattr(e, "errcode", None) == 429:
                     attempt += 1
                     delay = min(max_sleep, base_backoff * attempt) + random.uniform(0, 3.0)
                     _logger.warning(
-                        "XML-RPC 429 en %s.%s intento=%s/%s; durmiendo %.2fs",
-                        model, method, attempt, max_retries, delay
+                        "XML-RPC 429 en %s.%s intento=%s; durmiendo %.2fs y reintentando...",
+                        model, method, attempt, delay
                     )
                     time.sleep(delay)
                     continue

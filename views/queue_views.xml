@@ -71,6 +71,9 @@
         <field name="model">payment.import.queue.line</field>
         <field name="arch" type="xml">
             <tree string="Cola de Pagos" create="false" delete="false" decoration-success="state=='done'" decoration-danger="state=='failed'" decoration-warning="state=='pending'" decoration-muted="state=='skipped'">
+                <header>
+                    <button name="action_retry" type="object" string="Reintentar fallidos" class="btn-warning"/>
+                </header>
                 <field name="row_number" width="60px"/>
                 <field name="state" width="100px"/>
                 <field name="tipo_operacion"/>
@@ -90,6 +93,9 @@
         <field name="arch" type="xml">
             <form string="Registro de Cola" create="false" delete="false">
                 <header>
+                    <button name="action_retry" type="object" string="Reintentar"
+                        class="btn-warning"
+                        attrs="{'invisible': [('state', '!=', 'failed')]}"/>
                     <field name="state" widget="statusbar"/>
                 </header>
                 <sheet>

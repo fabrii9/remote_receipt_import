@@ -103,6 +103,18 @@ class PaymentImportQueueLine(models.Model):
             'error_message': reason,
         })
 
+    def action_retry(self):
+        """Resetea los registros fallidos a 'pending' para que se reintenten."""
+        failed = self.filtered(lambda r: r.state == 'failed')
+        if not failed:
+            return
+        failed.write({
+            'state': 'pending',
+            'scheduled_date': False,
+            'error_message': False,
+            'attempts': 0,
+        })
+
     @api.model
     def cron_process_all_batches(self):
         """

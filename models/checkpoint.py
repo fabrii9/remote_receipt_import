@@ -78,3 +78,10 @@ class PaymentImportCheckpoint(models.Model):
             'state': 'failed',
             'error_message': error_msg,
         })
+
+    def action_resume(self):
+        """Reanuda un checkpoint fallido para permitir reprocesamiento."""
+        self.write({
+            'state': 'running',
+            'error_message': False,
+        })

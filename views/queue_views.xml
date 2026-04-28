@@ -7,6 +7,7 @@
         <field name="arch" type="xml">
             <form string="Progreso de Importación" create="false" edit="false" delete="false">
                 <header>
+                    <button name="action_resume" type="object" string="Reanudar" class="btn-warning" attrs="{'invisible': [('state', '!=', 'failed')]}"/>
                     <field name="state" widget="statusbar" statusbar_visible="running,paused,completed,failed"/>
                 </header>
                 <sheet>

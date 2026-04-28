@@ -104,8 +104,10 @@ class PaymentImportQueueLineProcessor(models.Model):
             url, db, user, pwd, journal_id, pm_line_id, tolerance = import_model._read_settings()
             uid, objects = import_model._xmlrpc_env(url, db, user, pwd)
         except Exception as e:
-            _logger.error(f"❌ Error en configuración: {e}")
-            checkpoint.mark_failed(str(e))
+            _logger.error(f"❌ Error en configuración/conexión al inicio del lote: {e}")
+            # NO marcamos el checkpoint como failed: es un error transitorio
+            # (red caída, timeout, remoto reiniciándose). Dejamos el checkpoint
+            # en 'running' para que el próximo cron (2 min) lo reintente.
             return
         
         # Obtener contextos (igual que antes)
@@ -118,8 +120,9 @@ class PaymentImportQueueLineProcessor(models.Model):
 
             all_company_ids = self._execute_kw_with_retry(objects, db, uid, pwd, "res.company", "search", [[]])
         except Exception as e:
-            _logger.error(f"❌ Error obteniendo contextos: {e}")
-            checkpoint.mark_failed(str(e))
+            _logger.error(f"❌ Error obteniendo contextos al inicio del lote: {e}")
+            # Error transitorio: dejamos el checkpoint en 'running'
+            # para reintento automático en la siguiente ejecución del cron.
             return
         
         ctx_any_company = {"active_test": False, "allowed_company_ids": all_company_ids}
